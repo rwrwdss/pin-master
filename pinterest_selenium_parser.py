@@ -21,12 +21,14 @@ from bs4 import BeautifulSoup
 
 from pinterest_selectors import PinterestSelectors, PinterestURLs, PinterestConfig
 from cookies_manager import load_cookies_from_file
+from pinterest_auth import PinterestAuth
 
 
 class PinterestSeleniumParser:
     """Парсер Pinterest с использованием Selenium"""
     
-    def __init__(self, cookies_file: Optional[str] = None, headless: bool = True, download_images: bool = True):
+    def __init__(self, cookies_file: Optional[str] = None, headless: bool = True, 
+                 download_images: bool = True, auto_login: bool = False):
         """
         Инициализирует парсер с Selenium.
         
@@ -34,13 +36,19 @@ class PinterestSeleniumParser:
             cookies_file: Путь к файлу с cookies
             headless: Запускать браузер в фоновом режиме
             download_images: Скачивать изображения в локальную папку
+            auto_login: Автоматически выполнять логин если cookies нет
         """
         self.cookies_file = cookies_file
         self.headless = headless
         self.download_images = download_images
+        self.auto_login = auto_login
         self.images_dir = None
         self.driver = None
         self._setup_driver()
+        
+        # Проверяем авторизацию и логинимся если нужно
+        if self.auto_login:
+            self._ensure_authentication()
         
         # Создаем папку для изображений если нужно
         if self.download_images:
@@ -70,6 +78,63 @@ class PinterestSeleniumParser:
             print(f"Ошибка при запуске Chrome драйвера: {e}")
             print("Убедитесь, что Chrome установлен на системе")
             raise
+    
+    def _ensure_authentication(self):
+        """Проверяет авторизацию и выполняет логин если нужно"""
+        try:
+            # Проверяем наличие cookies файла
+            cookies_file = self.cookies_file or "pinterest_cookies.json"
+            if os.path.exists(cookies_file):
+                # Пробуем загрузить cookies
+                cookies = load_cookies_from_file(cookies_file)
+                if cookies:
+                    # Загружаем cookies в браузер
+                    self.driver.get("https://www.pinterest.com")
+                    time.sleep(2)
+                    for name, value in cookies.items():
+                        try:
+                            self.driver.add_cookie({
+                                'name': name,
+                                'value': value,
+                                'domain': '.pinterest.com',
+                                'path': '/'
+                            })
+                        except:
+                            pass
+                    
+                    # Проверяем авторизацию
+                    self.driver.get("https://www.pinterest.com")
+                    time.sleep(2)
+                    page_source = self.driver.page_source.lower()
+                    if 'create' in page_source or 'saved' in page_source:
+                        print("✓ Используется существующая сессия")
+                        return
+            
+            # Если cookies нет или невалидны, выполняем логин
+            print("⚠ Сессия не найдена или невалидна. Выполняется авторизация...")
+            auth = PinterestAuth(headless=self.headless)
+            try:
+                if auth.authenticate():
+                    # Копируем cookies из auth браузера в наш
+                    auth_cookies = auth.driver.get_cookies()
+                    self.driver.get("https://www.pinterest.com")
+                    time.sleep(2)
+                    for cookie in auth_cookies:
+                        if 'pinterest.com' in cookie.get('domain', ''):
+                            try:
+                                self.driver.add_cookie({
+                                    'name': cookie['name'],
+                                    'value': cookie['value'],
+                                    'domain': cookie.get('domain', '.pinterest.com'),
+                                    'path': cookie.get('path', '/')
+                                })
+                            except:
+                                pass
+                    print("✓ Авторизация выполнена, cookies загружены")
+            finally:
+                auth.close()
+        except Exception as e:
+            print(f"⚠ Ошибка при проверке авторизации: {e}")
     
     def _create_images_directory(self):
         """Создает папку с рандомным названием для сохранения изображений"""
@@ -610,12 +675,22 @@ class PinterestSeleniumParser:
 
 if __name__ == "__main__":
     import sys
+    import json
     from pinterest_parser import PinterestParser
     
     print("=" * 80)
     print("ПАРСЕР PINTEREST")
     print("=" * 80)
     print()
+    
+    # Загружаем конфиг
+    config = {}
+    if os.path.exists("config.json"):
+        try:
+            with open("config.json", 'r', encoding='utf-8') as f:
+                config = json.load(f)
+        except:
+            pass
     
     # Интерактивный ввод тематики
     if len(sys.argv) > 1:
@@ -646,8 +721,16 @@ if __name__ == "__main__":
     print(f"Количество пинов: {max_pins}")
     print()
     
-    # Создаем парсер
-    parser = PinterestSeleniumParser(headless=True)
+    # Создаем парсер с автологином если включено в конфиге
+    enable_login = config.get("enable_login", False)
+    headless = config.get("headless", True)
+    download_images = config.get("download_images", True)
+    
+    parser = PinterestSeleniumParser(
+        headless=headless,
+        download_images=download_images,
+        auto_login=enable_login
+    )
     
     try:
         pins = parser.parse_search_page(query, max_pins=max_pins)
@@ -671,6 +754,7 @@ if __name__ == "__main__":
             print(f"\n✓ Данные сохранены в файл: {filename}")
         else:
             print("\n⚠ Пины не найдены. Попробуйте:")
+            print("  - Включить авторизацию в config.json (enable_login: true)")
             print("  - Добавить cookies для авторизации")
             print("  - Изменить поисковый запрос")
             print("  - Проверить интернет-соединение")

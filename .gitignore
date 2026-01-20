@@ -27,6 +27,9 @@ pinterest_cookies.json
 *.cookies
 cookies.txt
 
+# Config (может содержать чувствительные данные)
+# config.json  # Раскомментируйте если не хотите коммитить конфиг
+
 # OS
 .DS_Store
 Thumbs.db
