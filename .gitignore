@@ -1,0 +1,32 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Output files
+*.csv
+*.html
+pinterest_page_source.html
+selectors_backup.json
+
+# Cookies (не коммитить!)
+pinterest_cookies.json
+*.cookies
+cookies.txt
+
+# OS
+.DS_Store
+Thumbs.db
