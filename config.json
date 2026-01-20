@@ -1,0 +1,9 @@
+{
+  "enable_login": false,
+  "login_url": "https://ru.pinterest.com/login/",
+  "cookies_file": "pinterest_cookies.json",
+  "headless": true,
+  "download_images": true,
+  "wait_for_manual_login": true,
+  "login_timeout": 300
+}
