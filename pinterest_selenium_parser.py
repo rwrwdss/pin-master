@@ -842,6 +842,408 @@ class PinterestSeleniumParser:
             print(f"Ошибка при парсинге пина {pin_url}: {e}")
             return None
     
+    def get_account_info(self) -> Optional[Dict[str, str]]:
+        """
+        Получает информацию об аккаунте пользователя.
+        Переходит на /me и извлекает имя пользователя и другую информацию.
+        
+        Returns:
+            Словарь с информацией об аккаунте или None
+        """
+        try:
+            print("\n" + "=" * 80)
+            print("ПОЛУЧЕНИЕ ИНФОРМАЦИИ ОБ АККАУНТЕ")
+            print("=" * 80)
+            
+            # Переходим на /me
+            self.driver.get(PinterestURLs.USER_ME)
+            
+            # Ждем загрузки и редиректа
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    lambda d: '/me' not in d.current_url or 'pinterest.com' in d.current_url
+                )
+            except:
+                time.sleep(3)
+            
+            # URL должен измениться на /username/
+            current_url = self.driver.current_url
+            print(f"Текущий URL: {current_url}")
+            
+            # Извлекаем имя пользователя из URL
+            username = None
+            if '/me' not in current_url:
+                # URL вида: https://ru.pinterest.com/username/ или /username/_pins/
+                parts = current_url.replace('https://ru.pinterest.com/', '').replace('https://www.pinterest.com/', '').split('/')
+                if parts and parts[0]:
+                    username = parts[0]
+            
+            account_info = {
+                'username': username or '',
+                'profile_url': current_url,
+                'pins_url': f"https://ru.pinterest.com/{username}/_pins/" if username else '',
+                'boards_url': f"https://ru.pinterest.com/{username}/_boards/" if username else ''
+            }
+            
+            # Пробуем извлечь дополнительную информацию со страницы
+            try:
+                page_source = self.driver.page_source
+                
+                # Ищем имя пользователя на странице
+                if not username:
+                    # Пробуем найти в различных местах
+                    try:
+                        username_elements = self.driver.find_elements(By.CSS_SELECTOR, 
+                            'h1, [data-test-id="user-name"], [class*="username"], [class*="UserName"]')
+                        for elem in username_elements:
+                            text = elem.text.strip()
+                            if text and len(text) < 50 and not text.startswith('http'):
+                                account_info['display_name'] = text
+                                break
+                    except:
+                        pass
+                
+                # Ищем количество пинов и досок
+                try:
+                    stats_elements = self.driver.find_elements(By.CSS_SELECTOR, 
+                        '[class*="stat"], [class*="count"], [class*="Stat"]')
+                    for elem in stats_elements:
+                        text = elem.text.strip()
+                        if 'пин' in text.lower() or 'pin' in text.lower():
+                            account_info['pins_count'] = text
+                        elif 'доск' in text.lower() or 'board' in text.lower():
+                            account_info['boards_count'] = text
+                except:
+                    pass
+            except:
+                pass
+            
+            if username:
+                print(f"✓ Имя пользователя: {username}")
+                print(f"✓ URL профиля: {account_info['profile_url']}")
+                print(f"✓ URL пинов: {account_info['pins_url']}")
+                print(f"✓ URL досок: {account_info['boards_url']}")
+            else:
+                print("⚠ Не удалось определить имя пользователя")
+            
+            print("=" * 80 + "\n")
+            return account_info if username else None
+            
+        except Exception as e:
+            print(f"⚠ Ошибка при получении информации об аккаунте: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def parse_user_pins(self, username: str = None, max_pins: int = None, scroll_times: int = 3) -> List[Dict[str, str]]:
+        """
+        Парсит пины пользователя.
+        
+        Args:
+            username: Имя пользователя (если None, получает из /me)
+            max_pins: Максимальное количество пинов
+            scroll_times: Количество прокруток для загрузки контента
+            
+        Returns:
+            Список словарей с данными о пинах
+        """
+        if max_pins is None:
+            max_pins = PinterestConfig.MAX_PINS
+        
+        # Если username не указан, получаем из /me
+        if not username:
+            account_info = self.get_account_info()
+            if account_info and account_info.get('username'):
+                username = account_info['username']
+            else:
+                print("⚠ Не удалось определить имя пользователя")
+                return []
+        
+        url = PinterestURLs.USER_PINS.format(username=username)
+        print(f"Парсинг пинов пользователя: {username}")
+        print(f"URL: {url}")
+        
+        # Переходим на страницу пинов
+        self.driver.get(url)
+        
+        # Ждем загрузки
+        try:
+            WebDriverWait(self.driver, 8).until(
+                lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+            )
+        except:
+            time.sleep(2)
+        
+        # Прокручиваем для загрузки контента
+        print("Прокрутка страницы для загрузки контента...")
+        for i in range(scroll_times):
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+            print(f"  Прокрутка {i+1}/{scroll_times}")
+        
+        # Извлекаем данные
+        html = self.driver.page_source
+        soup = BeautifulSoup(html, 'html.parser')
+        pins_data = self._extract_from_html(soup)
+        
+        # Если пины не найдены, пробуем альтернативный метод
+        if not pins_data:
+            print("Пины не найдены стандартным методом, пробуем альтернативный...")
+            try:
+                # Дополнительное ожидание
+                time.sleep(2)
+                
+                # Ищем все ссылки на пины более широким поиском
+                all_links = self.driver.find_elements(By.CSS_SELECTOR, 'a[href*="pin"], a[href*="/pin/"]')
+                seen_urls = set()
+                
+                print(f"Найдено потенциальных ссылок: {len(all_links)}")
+                
+                for link in all_links:
+                    try:
+                        href = link.get_attribute('href')
+                        if not href or '/pin/' not in href:
+                            continue
+                        
+                        # Нормализуем URL
+                        if href not in seen_urls:
+                            seen_urls.add(href)
+                            
+                            # Получаем базовую информацию
+                            pin_id = href.split('/pin/')[-1].rstrip('/')
+                            if not pin_id:
+                                continue
+                            
+                            # Ищем изображение рядом со ссылкой
+                            try:
+                                parent = link.find_element(By.XPATH, './ancestor::div[1]')
+                                img = parent.find_element(By.TAG_NAME, 'img')
+                                image_url = img.get_attribute('src') or img.get_attribute('data-src')
+                            except:
+                                image_url = ''
+                            
+                            pins_data.append({
+                                'author': username,
+                                'pin_link': href,
+                                'image_url': image_url,
+                                'title': '',
+                                'description': ''
+                            })
+                    except:
+                        continue
+                
+                print(f"Найдено пинов альтернативным методом: {len(pins_data)}")
+            except Exception as e:
+                print(f"Ошибка альтернативного метода: {e}")
+        
+        # Получаем полную информацию о пинах
+        if pins_data:
+            print("Получение полной информации о пинах...")
+            for i, pin in enumerate(pins_data[:max_pins]):
+                if pin.get('pin_link') and not pin.get('title'):
+                    detail = self.parse_pin_detail(pin['pin_link'])
+                    if detail:
+                        pins_data[i].update(detail)
+                    
+                    # Скачиваем изображение если нужно
+                    if self.download_images and pins_data[i].get('image_url'):
+                        pin_id = pin['pin_link'].split('/pin/')[-1].rstrip('/')
+                        local_path = self._download_image(pins_data[i]['image_url'], pin_id)
+                        if local_path:
+                            pins_data[i]['image_url'] = local_path
+                    
+                    time.sleep(1)
+        
+        print(f"Найдено пинов: {len(pins_data)}")
+        return pins_data[:max_pins]
+    
+    def parse_user_boards(self, username: str = None) -> List[Dict[str, str]]:
+        """
+        Парсит доски пользователя.
+        
+        Args:
+            username: Имя пользователя (если None, получает из /me)
+            
+        Returns:
+            Список словарей с информацией о досках
+        """
+        # Если username не указан, получаем из /me
+        if not username:
+            account_info = self.get_account_info()
+            if account_info and account_info.get('username'):
+                username = account_info['username']
+            else:
+                print("⚠ Не удалось определить имя пользователя")
+                return []
+        
+        url = PinterestURLs.USER_BOARDS.format(username=username)
+        print(f"\nПарсинг досок пользователя: {username}")
+        print(f"URL: {url}")
+        
+        # Переходим на страницу досок
+        self.driver.get(url)
+        
+        # Ждем загрузки
+        try:
+            WebDriverWait(self.driver, 8).until(
+                lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+            )
+        except:
+            time.sleep(2)
+        
+        # Прокручиваем для загрузки всех досок
+        print("Прокрутка для загрузки досок...")
+        for i in range(3):
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+        
+        # Дополнительное ожидание для загрузки контента
+        time.sleep(3)
+        
+        boards_data = []
+        
+        try:
+            # Ищем ссылки на доски - более широкий поиск
+            board_links = self.driver.find_elements(By.CSS_SELECTOR, f'a[href*="/{username}/"]')
+            seen_boards = set()
+            
+            for link in board_links:
+                try:
+                    href = link.get_attribute('href')
+                    if not href or href in seen_boards:
+                        continue
+                    
+                    # Доски имеют формат: /username/board-name/
+                    # Исключаем служебные страницы
+                    excluded_paths = ['/_pins/', '/_boards/', '/_created/', '/_saved/', '/pin/', '/settings/', '/account/']
+                    is_excluded = any(excluded in href for excluded in excluded_paths)
+                    
+                    # Исключаем если это просто профиль пользователя
+                    is_profile = href.rstrip('/').endswith(f'/{username}')
+                    
+                    if (f'/{username}/' in href and 
+                        not is_excluded and
+                        not is_profile and
+                        '/pin/' not in href and
+                        href.count('/') >= 3):
+                        
+                        seen_boards.add(href)
+                        
+                        # Извлекаем название доски
+                        board_name = href.rstrip('/').split('/')[-1]
+                        
+                        # Ищем изображение доски
+                        try:
+                            parent = link.find_element(By.XPATH, './ancestor::div[1]')
+                            img = parent.find_element(By.TAG_NAME, 'img')
+                            board_image = img.get_attribute('src') or img.get_attribute('data-src')
+                        except:
+                            board_image = ''
+                        
+                        # Ищем описание/количество пинов
+                        try:
+                            parent = link.find_element(By.XPATH, './ancestor::div[1]')
+                            text_elements = parent.find_elements(By.CSS_SELECTOR, 'div, span')
+                            board_description = ''
+                            pins_count = ''
+                            
+                            for elem in text_elements:
+                                text = elem.text.strip()
+                                if text and ('пин' in text.lower() or 'pin' in text.lower()):
+                                    pins_count = text
+                                elif text and len(text) > 5 and len(text) < 100:
+                                    if not board_description:
+                                        board_description = text
+                        except:
+                            board_description = ''
+                            pins_count = ''
+                        
+                        boards_data.append({
+                            'board_name': board_name,
+                            'board_url': href,
+                            'board_image': board_image or '',
+                            'description': board_description,
+                            'pins_count': pins_count,
+                            'username': username
+                        })
+                except:
+                    continue
+        
+        except Exception as e:
+            print(f"⚠ Ошибка при парсинге досок: {e}")
+        
+        print(f"Найдено досок: {len(boards_data)}")
+        return boards_data
+    
+    def parse_board_pins(self, username: str, board_name: str, max_pins: int = None, scroll_times: int = 3) -> List[Dict[str, str]]:
+        """
+        Парсит пины из конкретной доски пользователя.
+        
+        Args:
+            username: Имя пользователя
+            board_name: Название доски
+            max_pins: Максимальное количество пинов
+            scroll_times: Количество прокруток
+            
+        Returns:
+            Список словарей с данными о пинах
+        """
+        if max_pins is None:
+            max_pins = PinterestConfig.MAX_PINS
+        
+        url = PinterestURLs.BOARD_PINS.format(username=username, board_name=board_name)
+        print(f"\nПарсинг пинов из доски: {board_name}")
+        print(f"URL: {url}")
+        
+        # Переходим на страницу доски
+        self.driver.get(url)
+        
+        # Ждем загрузки
+        try:
+            WebDriverWait(self.driver, 8).until(
+                lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+            )
+        except:
+            time.sleep(2)
+        
+        # Прокручиваем для загрузки контента
+        print("Прокрутка страницы для загрузки контента...")
+        for i in range(scroll_times):
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+            print(f"  Прокрутка {i+1}/{scroll_times}")
+        
+        # Извлекаем данные
+        html = self.driver.page_source
+        soup = BeautifulSoup(html, 'html.parser')
+        pins_data = self._extract_from_html(soup)
+        
+        # Добавляем информацию о доске к каждому пину
+        for pin in pins_data:
+            pin['board_name'] = board_name
+            pin['board_url'] = url
+        
+        # Получаем полную информацию о пинах
+        if pins_data:
+            print("Получение полной информации о пинах...")
+            for i, pin in enumerate(pins_data[:max_pins]):
+                if pin.get('pin_link') and not pin.get('title'):
+                    detail = self.parse_pin_detail(pin['pin_link'])
+                    if detail:
+                        pins_data[i].update(detail)
+                    
+                    # Скачиваем изображение если нужно
+                    if self.download_images and pins_data[i].get('image_url'):
+                        pin_id = pin['pin_link'].split('/pin/')[-1].rstrip('/')
+                        local_path = self._download_image(pins_data[i]['image_url'], pin_id)
+                        if local_path:
+                            pins_data[i]['image_url'] = local_path
+                    
+                    time.sleep(1)
+        
+        print(f"Найдено пинов в доске: {len(pins_data)}")
+        return pins_data[:max_pins]
+    
     def close(self):
         """Закрывает браузер"""
         if self.driver:
