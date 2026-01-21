@@ -48,7 +48,10 @@ class PinterestSeleniumParser:
         
         # Проверяем авторизацию и логинимся если нужно
         if self.auto_login:
+            print(f"\n🔐 Авторизация включена (auto_login={self.auto_login})")
             self._ensure_authentication()
+        else:
+            print(f"\nℹ Авторизация отключена (auto_login={self.auto_login})")
         
         # Создаем папку для изображений если нужно
         if self.download_images:
@@ -82,59 +85,188 @@ class PinterestSeleniumParser:
     def _ensure_authentication(self):
         """Проверяет авторизацию и выполняет логин если нужно"""
         try:
+            print("\n" + "=" * 80)
+            print("ПРОВЕРКА АВТОРИЗАЦИИ")
+            print("=" * 80)
+            
             # Проверяем наличие cookies файла
             cookies_file = self.cookies_file or "pinterest_cookies.json"
             if os.path.exists(cookies_file):
+                print(f"✓ Найден файл cookies: {cookies_file}")
                 # Пробуем загрузить cookies
                 cookies = load_cookies_from_file(cookies_file)
                 if cookies:
+                    print(f"✓ Загружено {len(cookies)} cookies из файла")
+                    
+                    # Проверяем что окно браузера открыто
+                    try:
+                        self.driver.current_url
+                    except:
+                        print("⚠ Окно браузера закрыто, перезапускаю...")
+                        self._setup_driver()
+                    
                     # Загружаем cookies в браузер
+                    print("  Загрузка cookies в браузер...")
                     self.driver.get("https://www.pinterest.com")
-                    time.sleep(2)
+                    
+                    # Ждем загрузки страницы (оптимизированно)
+                    try:
+                        # Ждем только базовую загрузку, не полную
+                        WebDriverWait(self.driver, 5).until(
+                            lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+                        )
+                    except:
+                        time.sleep(1)  # Минимальная задержка
+                    
+                    # Устанавливаем cookies с проверкой
+                    cookies_set = 0
                     for name, value in cookies.items():
                         try:
+                            # Проверяем что окно еще открыто
+                            self.driver.current_url
+                            
                             self.driver.add_cookie({
                                 'name': name,
                                 'value': value,
                                 'domain': '.pinterest.com',
                                 'path': '/'
                             })
-                        except:
-                            pass
+                            cookies_set += 1
+                        except Exception as e:
+                            # Игнорируем ошибки установки отдельных cookies
+                            continue
+                    
+                    print(f"  ✓ Установлено {cookies_set} из {len(cookies)} cookies")
+                    
+                    # Перезагружаем страницу с cookies
+                    self.driver.refresh()
+                    
+                    # Ждем базовой загрузки (не ждем полной загрузки всех ресурсов)
+                    try:
+                        WebDriverWait(self.driver, 8).until(
+                            lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+                        )
+                    except:
+                        time.sleep(2)  # Минимальная задержка
                     
                     # Проверяем авторизацию
-                    self.driver.get("https://www.pinterest.com")
-                    time.sleep(2)
                     page_source = self.driver.page_source.lower()
-                    if 'create' in page_source or 'saved' in page_source:
-                        print("✓ Используется существующая сессия")
+                    current_url = self.driver.current_url
+                    
+                    # Проверяем признаки авторизации (более тщательно)
+                    is_authorized = (
+                        'create' in page_source or 
+                        'saved' in page_source or 
+                        'profile' in page_source or
+                        ('pinterest.com' in current_url and '/login' not in current_url.lower() and '/business' not in current_url.lower())
+                    )
+                    
+                    if is_authorized:
+                        print("✓ Используется существующая валидная сессия")
+                        print("=" * 80 + "\n")
                         return
+                    else:
+                        print(f"⚠ Сессия невалидна или истекла (URL: {current_url[:80]})")
+                        # Проверяем есть ли кнопка "Войти" на странице
+                        if 'войти' in page_source or 'log in' in page_source or 'login' in current_url.lower():
+                            print("  На странице обнаружена форма входа - требуется авторизация")
+            else:
+                print(f"⚠ Файл cookies не найден: {cookies_file}")
             
             # Если cookies нет или невалидны, выполняем логин
-            print("⚠ Сессия не найдена или невалидна. Выполняется авторизация...")
-            auth = PinterestAuth(headless=self.headless)
-            try:
-                if auth.authenticate():
-                    # Копируем cookies из auth браузера в наш
-                    auth_cookies = auth.driver.get_cookies()
-                    self.driver.get("https://www.pinterest.com")
-                    time.sleep(2)
-                    for cookie in auth_cookies:
-                        if 'pinterest.com' in cookie.get('domain', ''):
-                            try:
-                                self.driver.add_cookie({
-                                    'name': cookie['name'],
-                                    'value': cookie['value'],
-                                    'domain': cookie.get('domain', '.pinterest.com'),
-                                    'path': cookie.get('path', '/')
-                                })
-                            except:
-                                pass
-                    print("✓ Авторизация выполнена, cookies загружены")
-            finally:
-                auth.close()
+            print("\n⚠ Сессия не найдена или невалидна. Выполняется авторизация...")
+            print("=" * 80 + "\n")
+            
+            # Используем текущий браузер для логина (не создаем новый)
+            # Для логина нужен видимый браузер
+            was_headless = self.headless
+            if was_headless:
+                print("⚠ Внимание: headless режим временно отключен для логина")
+                print("   Браузер будет видимым для ручного входа\n")
+                # Перезапускаем драйвер в видимом режиме
+                self.driver.quit()
+                self.headless = False
+                self._setup_driver()
+            
+            # Выполняем логин в текущем браузере
+            login_url = "https://ru.pinterest.com/login/"
+            print(f"🌐 Открываю страницу логина: {login_url}")
+            self.driver.get(login_url)
+            time.sleep(3)
+            
+            print("\n" + "=" * 80)
+            print("🔐 ОЖИДАНИЕ РУЧНОГО ЛОГИНА")
+            print("=" * 80)
+            print("📌 ВАЖНО: Войдите в свой аккаунт Pinterest в открывшемся браузере!")
+            print("   1. Введите ваш email и пароль")
+            print("   2. Нажмите кнопку 'Войти' или 'Log in'")
+            print("   3. Дождитесь загрузки главной страницы Pinterest")
+            print("   4. Сессия будет автоматически сохранена")
+            print()
+            print(f"⏱ Ожидание: 300 секунд (5 минут)")
+            print("=" * 80)
+            print()
+            
+            # Ждем пока пользователь залогинится
+            timeout = 300
+            start_time = time.time()
+            check_interval = 5
+            
+            while time.time() - start_time < timeout:
+                try:
+                    current_url = self.driver.current_url
+                    
+                    # Если мы не на странице логина, возможно пользователь залогинился
+                    if '/login' not in current_url.lower():
+                        # Проверяем признаки авторизации
+                        page_source = self.driver.page_source.lower()
+                        if 'create' in page_source or 'saved' in page_source or 'profile' in page_source:
+                            print("\n✓ Обнаружен успешный вход!")
+                            time.sleep(2)
+                            
+                            # Сохраняем cookies
+                            cookies = self.driver.get_cookies()
+                            cookies_dict = {}
+                            for cookie in cookies:
+                                if 'pinterest.com' in cookie.get('domain', ''):
+                                    cookies_dict[cookie['name']] = cookie['value']
+                            
+                            if cookies_dict:
+                                cookies_file = self.cookies_file or "pinterest_cookies.json"
+                                from cookies_manager import CookiesManager
+                                CookiesManager.save_to_json(cookies_dict, cookies_file)
+                                print(f"✓ Сессия сохранена: {len(cookies_dict)} cookies")
+                            
+                            print("=" * 80 + "\n")
+                            return
+                    
+                    # Показываем прогресс
+                    elapsed = int(time.time() - start_time)
+                    if elapsed % 30 == 0 and elapsed > 0:
+                        remaining = timeout - elapsed
+                        minutes = remaining // 60
+                        seconds = remaining % 60
+                        print(f"⏳ Ожидание входа... Осталось ~{minutes} мин {seconds} сек")
+                    
+                    time.sleep(check_interval)
+                    
+                except Exception as e:
+                    print(f"⚠ Ошибка при проверке статуса: {e}")
+                    time.sleep(check_interval)
+            
+            print("\n⚠ Время ожидания истекло")
+            print("=" * 80 + "\n")
+            
+            # Возвращаем headless режим если был
+            if was_headless:
+                self.driver.quit()
+                self.headless = True
+                self._setup_driver()
         except Exception as e:
-            print(f"⚠ Ошибка при проверке авторизации: {e}")
+            print(f"\n⚠ Ошибка при проверке авторизации: {e}")
+            import traceback
+            traceback.print_exc()
+            print("=" * 80 + "\n")
     
     def _create_images_directory(self):
         """Создает папку с рандомным названием для сохранения изображений"""
@@ -205,32 +337,63 @@ class PinterestSeleniumParser:
     
     def _load_cookies(self):
         """Загружает cookies в браузер"""
-        if not self.cookies_file:
-            if not load_cookies_from_file("pinterest_cookies.json"):
-                return False
-        
-        cookies = load_cookies_from_file(self.cookies_file or "pinterest_cookies.json")
-        if not cookies:
-            return False
-        
-        # Переходим на Pinterest для установки cookies
-        self.driver.get("https://www.pinterest.com")
-        time.sleep(2)
-        
-        # Устанавливаем cookies
-        for name, value in cookies.items():
+        try:
+            # Проверяем что окно браузера открыто
             try:
-                self.driver.add_cookie({
-                    'name': name,
-                    'value': value,
-                    'domain': '.pinterest.com',
-                    'path': '/'
-                })
-            except Exception as e:
-                print(f"Ошибка при установке cookie {name}: {e}")
-        
-        print(f"✓ Загружено {len(cookies)} cookies")
-        return True
+                self.driver.current_url
+            except:
+                print("⚠ Окно браузера закрыто, перезапускаю...")
+                self._setup_driver()
+            
+            if not self.cookies_file:
+                if not load_cookies_from_file("pinterest_cookies.json"):
+                    return False
+            
+            cookies = load_cookies_from_file(self.cookies_file or "pinterest_cookies.json")
+            if not cookies:
+                return False
+            
+            # Переходим на Pinterest для установки cookies
+            self.driver.get("https://www.pinterest.com")
+            
+            # Ждем базовой загрузки страницы (оптимизированно)
+            try:
+                WebDriverWait(self.driver, 5).until(
+                    lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+                )
+            except:
+                time.sleep(1)  # Минимальная задержка
+            
+            # Устанавливаем cookies с проверкой
+            cookies_set = 0
+            for name, value in cookies.items():
+                try:
+                    # Проверяем что окно еще открыто
+                    self.driver.current_url
+                    
+                    self.driver.add_cookie({
+                        'name': name,
+                        'value': value,
+                        'domain': '.pinterest.com',
+                        'path': '/'
+                    })
+                    cookies_set += 1
+                except Exception as e:
+                    # Игнорируем ошибки установки отдельных cookies
+                    continue
+            
+            if cookies_set > 0:
+                print(f"✓ Загружено {cookies_set} cookies в браузер")
+                # Перезагружаем страницу чтобы применить cookies
+                self.driver.refresh()
+                time.sleep(2)
+                return True
+            else:
+                print("⚠ Не удалось установить cookies")
+                return False
+        except Exception as e:
+            print(f"⚠ Ошибка при загрузке cookies: {e}")
+            return False
     
     def parse_search_page(self, query: str, max_pins: int = None, scroll_times: int = 3) -> List[Dict[str, str]]:
         """
@@ -250,13 +413,32 @@ class PinterestSeleniumParser:
         url = PinterestURLs.SEARCH_URL.format(query=query)
         print(f"Загрузка страницы: {url}")
         
-        # Загружаем cookies если есть
-        if self.cookies_file or load_cookies_from_file("pinterest_cookies.json"):
-            self._load_cookies()
+        # Проверяем что окно браузера открыто
+        try:
+            self.driver.current_url
+        except:
+            print("⚠ Окно браузера закрыто, перезапускаю...")
+            self._setup_driver()
+        
+        # Загружаем cookies если есть (только если еще не загружены)
+        if self.cookies_file or os.path.exists("pinterest_cookies.json"):
+            if not hasattr(self, '_cookies_loaded') or not self._cookies_loaded:
+                self._load_cookies()
+                self._cookies_loaded = True
         
         # Переходим на страницу поиска
+        print(f"  Переход на страницу поиска...")
         self.driver.get(url)
-        time.sleep(PinterestConfig.PAGE_LOAD_DELAY)
+        
+        # Ждем базовой загрузки страницы (не ждем полной загрузки всех ресурсов)
+        try:
+            WebDriverWait(self.driver, 8).until(
+                lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+            )
+            print("  ✓ Страница загружена")
+        except:
+            print("  ⚠ Страница загружается, продолжаем...")
+            time.sleep(2)  # Минимальная задержка вместо долгого ожидания
         
         # Прокручиваем страницу для загрузки контента
         print("Прокрутка страницы для загрузки контента...")
@@ -725,6 +907,16 @@ if __name__ == "__main__":
     enable_login = config.get("enable_login", False)
     headless = config.get("headless", True)
     download_images = config.get("download_images", True)
+    
+    # Если включен логин, headless должен быть False для видимости браузера
+    if enable_login:
+        headless = False
+        print("\n" + "=" * 80)
+        print("🔐 АВТОРИЗАЦИЯ ВКЛЮЧЕНА")
+        print("=" * 80)
+        print("Браузер будет открыт для ручного входа в Pinterest")
+        print("После успешного входа сессия сохранится автоматически")
+        print("=" * 80 + "\n")
     
     parser = PinterestSeleniumParser(
         headless=headless,

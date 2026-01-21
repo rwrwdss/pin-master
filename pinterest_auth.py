@@ -148,17 +148,28 @@ class PinterestAuth:
         login_url = self.config.get("login_url", "https://ru.pinterest.com/login/")
         timeout = self.config.get("login_timeout", 300)
         
-        print(f"Открываю страницу логина: {login_url}")
-        self.driver.get(login_url)
-        time.sleep(3)
+        print(f"\n🌐 Открываю страницу логина: {login_url}")
+        print("   Браузер должен открыться автоматически...")
+        try:
+            self.driver.get(login_url)
+            time.sleep(3)
+            print(f"✓ Страница загружена: {self.driver.current_url}")
+        except Exception as e:
+            print(f"⚠ Ошибка при загрузке страницы: {e}")
+            return False
         
         print("\n" + "=" * 80)
-        print("ОЖИДАНИЕ РУЧНОГО ЛОГИНА")
+        print("🔐 ОЖИДАНИЕ РУЧНОГО ЛОГИНА")
         print("=" * 80)
-        print("Пожалуйста, войдите в свой аккаунт Pinterest в открывшемся браузере.")
-        print("После успешного входа сессия будет автоматически сохранена.")
-        print(f"Ожидание: {timeout} секунд")
-        print("=" * 80 + "\n")
+        print("📌 ВАЖНО: Откройте открывшееся окно браузера!")
+        print("   1. Введите ваш email и пароль Pinterest")
+        print("   2. Нажмите кнопку 'Войти' или 'Log in'")
+        print("   3. Дождитесь загрузки главной страницы Pinterest")
+        print("   4. Сессия будет автоматически сохранена после успешного входа")
+        print()
+        print(f"⏱ Ожидание: {timeout} секунд (5 минут)")
+        print("=" * 80)
+        print()
         
         # Ждем пока пользователь залогинится
         start_time = time.time()
@@ -179,9 +190,12 @@ class PinterestAuth:
                 
                 # Показываем прогресс
                 elapsed = int(time.time() - start_time)
-                if elapsed % 30 == 0:  # Каждые 30 секунд
+                if elapsed % 30 == 0 and elapsed > 0:  # Каждые 30 секунд
                     remaining = timeout - elapsed
-                    print(f"⏳ Ожидание... Осталось ~{remaining} секунд")
+                    minutes = remaining // 60
+                    seconds = remaining % 60
+                    print(f"⏳ Ожидание входа... Осталось ~{minutes} мин {seconds} сек")
+                    print(f"   Текущий URL: {current_url[:80]}...")
                 
                 time.sleep(check_interval)
                 
