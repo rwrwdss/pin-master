@@ -25,6 +25,9 @@ selectors_backup.json
 # Images folders (generated dynamically)
 pinterest_images_*/
 
+# Cache (локальное хранилище данных)
+cache/
+
 # Cookies (не коммитить!)
 pinterest_cookies.json
 *.cookies

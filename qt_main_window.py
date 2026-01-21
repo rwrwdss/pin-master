@@ -14,6 +14,7 @@ from typing import Optional, Dict
 import json
 
 from pinterest_selenium_parser import PinterestSeleniumParser
+from cache_manager import CacheManager
 
 
 class AccountInfoWidget(QGroupBox):
@@ -107,9 +108,20 @@ class AccountInfoThread(QThread):
                 self.error_occurred.emit("Не удалось определить имя пользователя")
                 return
             
-            # Парсим доски пользователя
+            # Парсим доски пользователя (с проверкой кэша)
             try:
-                boards = self.parser.parse_user_boards(username=username)
+                # Сначала проверяем кэш
+                boards = CacheManager.load_boards(username)
+                if boards is None:
+                    # Кэша нет или он устарел - парсим заново
+                    print(f"Кэш досок для {username} не найден или устарел, парсим...")
+                    boards = self.parser.parse_user_boards(username=username)
+                    if boards:
+                        # Сохраняем в кэш
+                        CacheManager.save_boards(username, boards)
+                else:
+                    print(f"Используем кэш досок для {username}")
+                
                 if boards:
                     account_info['boards_count'] = f"{len(boards)} досок"
                     account_info['boards'] = boards
@@ -121,9 +133,22 @@ class AccountInfoThread(QThread):
                 account_info['boards_count'] = "Ошибка"
                 account_info['boards'] = []
             
-            # Парсим пины пользователя (ограничиваем до 10 для быстрой загрузки)
+            # Парсим пины пользователя (ограничиваем до 10 для быстрой загрузки, с проверкой кэша)
             try:
-                pins = self.parser.parse_user_pins(username=username, max_pins=10)
+                # Сначала проверяем кэш
+                pins = CacheManager.load_pins(username)
+                if pins is None:
+                    # Кэша нет или он устарел - парсим заново
+                    print(f"Кэш пинов для {username} не найден или устарел, парсим...")
+                    pins = self.parser.parse_user_pins(username=username, max_pins=10)
+                    if pins:
+                        # Сохраняем в кэш
+                        CacheManager.save_pins(username, pins)
+                else:
+                    print(f"Используем кэш пинов для {username}")
+                    # Ограничиваем до 10 для отображения
+                    pins = pins[:10]
+                
                 if pins:
                     account_info['pins_count'] = f"{len(pins)} пинов (показано 10)"
                     account_info['pins'] = pins
