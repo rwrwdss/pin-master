@@ -544,22 +544,77 @@ class PinterestSeleniumParser:
                     
                     # Извлекаем данные
                     image_url = ""
+                    media_type = "image"  # image, video, gif
                     title = ""
                     description = ""
                     author = ""
                     
-                    # Ищем изображение
+                    # Ищем медиа-контент (изображение, видео, GIF)
                     try:
-                        img = parent.find_element(By.TAG_NAME, 'img')
-                        image_url = img.get_attribute('src') or img.get_attribute('data-src') or img.get_attribute('data-lazy-src')
+                        # Сначала проверяем, есть ли видео
+                        try:
+                            video = parent.find_element(By.TAG_NAME, 'video')
+                            # Для видео берем постер (превью) или источник
+                            image_url = (video.get_attribute('poster') or 
+                                        video.get_attribute('src') or
+                                        video.get_attribute('data-src'))
+                            if image_url:
+                                media_type = "video"
+                        except:
+                            # Если видео нет, ищем изображение
+                            try:
+                                img = parent.find_element(By.TAG_NAME, 'img')
+                                image_url = (img.get_attribute('src') or 
+                                           img.get_attribute('data-src') or 
+                                           img.get_attribute('data-lazy-src'))
+                                
+                                # Проверяем, не GIF ли это
+                                if image_url:
+                                    # Проверяем по URL или атрибутам
+                                    img_src_lower = image_url.lower()
+                                    if '.gif' in img_src_lower or 'gif' in img.get_attribute('alt', '').lower():
+                                        media_type = "gif"
+                                    
+                                    # Проверяем наличие индикатора GIF/Video на странице
+                                    try:
+                                        # Ищем элементы с текстом "GIF" или "Video"
+                                        indicators = parent.find_elements(By.XPATH, 
+                                            ".//*[contains(text(), 'GIF') or contains(text(), 'Video') or contains(text(), 'VIDEO')]")
+                                        if indicators:
+                                            indicator_text = indicators[0].text.strip().upper()
+                                            if 'GIF' in indicator_text:
+                                                media_type = "gif"
+                                            elif 'VIDEO' in indicator_text or 'VIDEO' in indicator_text:
+                                                media_type = "video"
+                                    except:
+                                        pass
+                                
+                                if not image_url:
+                                    # Пробуем через style background-image
+                                    style = img.get_attribute('style') or parent.get_attribute('style')
+                                    if style and 'background-image' in style:
+                                        import re
+                                        match = re.search(r'url\(["\']?([^"\']+)["\']?\)', style)
+                                        if match:
+                                            image_url = match.group(1)
+                            except:
+                                pass
+                        
+                        # Если не нашли через теги, пробуем найти через data-атрибуты
                         if not image_url:
-                            # Пробуем через style background-image
-                            style = img.get_attribute('style') or parent.get_attribute('style')
-                            if style and 'background-image' in style:
-                                import re
-                                match = re.search(r'url\(["\']?([^"\']+)["\']?\)', style)
-                                if match:
-                                    image_url = match.group(1)
+                            try:
+                                # Ищем элементы с data-video-url или data-gif-url
+                                video_url = parent.get_attribute('data-video-url') or parent.get_attribute('data-video-src')
+                                gif_url = parent.get_attribute('data-gif-url') or parent.get_attribute('data-gif-src')
+                                
+                                if video_url:
+                                    image_url = video_url
+                                    media_type = "video"
+                                elif gif_url:
+                                    image_url = gif_url
+                                    media_type = "gif"
+                            except:
+                                pass
                     except:
                         pass
                     
@@ -589,7 +644,7 @@ class PinterestSeleniumParser:
                     except:
                         pass
                     
-                    # Если нашли хотя бы URL и изображение, добавляем
+                    # Добавляем пин если есть URL (даже без изображения, т.к. может быть видео/GIF)
                     if pin_url:
                         # Преобразуем URL изображения в прямую ссылку
                         if image_url and 'pinimg.com' in image_url:
@@ -599,10 +654,13 @@ class PinterestSeleniumParser:
                             elif '/236x/' in image_url:
                                 image_url = image_url.replace('/236x/', '/originals/')
                         
+                        # Для видео и GIF, если нет image_url, оставляем пустым
+                        # (ссылка на пин все равно будет работать)
                         pins_data.append({
                             'author': author,
                             'pin_link': pin_url,
-                            'image_url': image_url,
+                            'image_url': image_url or '',  # Может быть пустым для видео/GIF
+                            'media_type': media_type,  # image, video, gif
                             'title': title,
                             'description': description
                         })
@@ -681,6 +739,7 @@ class PinterestSeleniumParser:
                 'author': '',
                 'pin_link': pin_url,
                 'image_url': '',
+                'media_type': 'image',  # image, video, gif
                 'title': '',
                 'description': ''
             }
@@ -818,21 +877,60 @@ class PinterestSeleniumParser:
             except:
                 pass
             
-            # Ищем изображение
+            # Ищем медиа-контент (изображение, видео, GIF)
             try:
-                img_elements = self.driver.find_elements(By.CSS_SELECTOR, 'img[src*="pinimg.com"]')
-                for img in img_elements:
-                    src = img.get_attribute('src') or img.get_attribute('data-src')
-                    if src and 'pinimg.com' in src:
-                        # Преобразуем в оригинал (полный размер)
-                        if '/736x/' in src:
-                            src = src.replace('/736x/', '/originals/')
-                        elif '/564x/' in src:
-                            src = src.replace('/564x/', '/originals/')
-                        elif '/236x/' in src:
-                            src = src.replace('/236x/', '/originals/')
-                        pin_data['image_url'] = src
-                        break
+                # Сначала проверяем наличие видео
+                try:
+                    video_elements = self.driver.find_elements(By.TAG_NAME, 'video')
+                    for video in video_elements:
+                        # Для видео берем постер (превью) или источник
+                        video_src = (video.get_attribute('poster') or 
+                                    video.get_attribute('src') or
+                                    video.get_attribute('data-src'))
+                        if video_src:
+                            pin_data['image_url'] = video_src
+                            pin_data['media_type'] = 'video'
+                            break
+                except:
+                    pass
+                
+                # Если видео не найдено, ищем изображение
+                if not pin_data['image_url']:
+                    img_elements = self.driver.find_elements(By.CSS_SELECTOR, 'img[src*="pinimg.com"]')
+                    for img in img_elements:
+                        src = img.get_attribute('src') or img.get_attribute('data-src')
+                        if src and 'pinimg.com' in src:
+                            # Преобразуем в оригинал (полный размер)
+                            if '/736x/' in src:
+                                src = src.replace('/736x/', '/originals/')
+                            elif '/564x/' in src:
+                                src = src.replace('/564x/', '/originals/')
+                            elif '/236x/' in src:
+                                src = src.replace('/236x/', '/originals/')
+                            pin_data['image_url'] = src
+                            
+                            # Проверяем, не GIF ли это
+                            if '.gif' in src.lower() or 'gif' in img.get_attribute('alt', '').lower():
+                                pin_data['media_type'] = 'gif'
+                            
+                            break
+                
+                # Если не нашли через теги, пробуем найти через data-атрибуты
+                if not pin_data['image_url']:
+                    try:
+                        # Ищем элементы с data-video-url или data-gif-url
+                        main_content = self.driver.find_element(By.TAG_NAME, 'body')
+                        video_url = main_content.get_attribute('data-video-url') or main_content.get_attribute('data-video-src')
+                        gif_url = main_content.get_attribute('data-gif-url') or main_content.get_attribute('data-gif-src')
+                        
+                        if video_url:
+                            pin_data['image_url'] = video_url
+                            pin_data['media_type'] = 'video'
+                        elif gif_url:
+                            pin_data['image_url'] = gif_url
+                            pin_data['media_type'] = 'gif'
+                    except:
+                        pass
             except:
                 pass
             
@@ -1014,18 +1112,40 @@ class PinterestSeleniumParser:
                             if not pin_id:
                                 continue
                             
-                            # Ищем изображение рядом со ссылкой
+                            # Ищем медиа-контент рядом со ссылкой
+                            image_url = ''
+                            media_type = 'image'
                             try:
                                 parent = link.find_element(By.XPATH, './ancestor::div[1]')
-                                img = parent.find_element(By.TAG_NAME, 'img')
-                                image_url = img.get_attribute('src') or img.get_attribute('data-src')
+                                
+                                # Пробуем найти видео
+                                try:
+                                    video = parent.find_element(By.TAG_NAME, 'video')
+                                    image_url = (video.get_attribute('poster') or 
+                                               video.get_attribute('src') or
+                                               video.get_attribute('data-src'))
+                                    if image_url:
+                                        media_type = 'video'
+                                except:
+                                    # Если видео нет, ищем изображение
+                                    try:
+                                        img = parent.find_element(By.TAG_NAME, 'img')
+                                        image_url = img.get_attribute('src') or img.get_attribute('data-src')
+                                        
+                                        # Проверяем на GIF
+                                        if image_url and ('.gif' in image_url.lower() or 
+                                                         'gif' in img.get_attribute('alt', '').lower()):
+                                            media_type = 'gif'
+                                    except:
+                                        pass
                             except:
-                                image_url = ''
+                                pass
                             
                             pins_data.append({
                                 'author': username,
                                 'pin_link': href,
                                 'image_url': image_url,
+                                'media_type': media_type,
                                 'title': '',
                                 'description': ''
                             })
