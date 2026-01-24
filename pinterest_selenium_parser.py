@@ -210,37 +210,50 @@ class PinterestSeleniumParser:
             # Ждем пока пользователь залогинится
             timeout = 300
             start_time = time.time()
-            check_interval = 5
+            check_interval = 3  # Уменьшаем интервал для более быстрой реакции
             
             while time.time() - start_time < timeout:
                 try:
-                    current_url = self.driver.current_url
+                    # Проверяем доступность драйвера
+                    try:
+                        current_url = self.driver.current_url
+                    except Exception as e:
+                        print(f"⚠ Ошибка доступа к драйверу: {e}")
+                        time.sleep(check_interval)
+                        continue
                     
                     # Если мы не на странице логина, возможно пользователь залогинился
                     if '/login' not in current_url.lower():
-                        # Проверяем признаки авторизации
-                        page_source = self.driver.page_source.lower()
-                        if 'create' in page_source or 'saved' in page_source or 'profile' in page_source:
-                            print("\n✓ Обнаружен успешный вход!")
-                            time.sleep(2)
-                            
-                            # Сохраняем cookies
-                            cookies = self.driver.get_cookies()
-                            cookies_dict = {}
-                            for cookie in cookies:
-                                if 'pinterest.com' in cookie.get('domain', ''):
-                                    cookies_dict[cookie['name']] = cookie['value']
-                            
-                            if cookies_dict:
-                                cookies_file = self.cookies_file or "pinterest_cookies.json"
-                                from cookies_manager import CookiesManager
-                                CookiesManager.save_to_json(cookies_dict, cookies_file)
-                                print(f"✓ Сессия сохранена: {len(cookies_dict)} cookies")
-                            
-                            print("=" * 80 + "\n")
-                            return
+                        # Проверяем признаки авторизации (быстро, без долгого ожидания)
+                        try:
+                            page_source = self.driver.page_source.lower()
+                            if 'create' in page_source or 'saved' in page_source or 'profile' in page_source:
+                                print("\n✓ Обнаружен успешный вход!")
+                                time.sleep(1)  # Минимальная задержка
+                                
+                                # Сохраняем cookies (быстро)
+                                try:
+                                    cookies = self.driver.get_cookies()
+                                    cookies_dict = {}
+                                    for cookie in cookies:
+                                        if 'pinterest.com' in cookie.get('domain', ''):
+                                            cookies_dict[cookie['name']] = cookie['value']
+                                    
+                                    if cookies_dict:
+                                        cookies_file = self.cookies_file or "pinterest_cookies.json"
+                                        from cookies_manager import CookiesManager
+                                        CookiesManager.save_to_json(cookies_dict, cookies_file)
+                                        print(f"✓ Сессия сохранена: {len(cookies_dict)} cookies")
+                                except Exception as e:
+                                    print(f"⚠ Ошибка при сохранении cookies: {e}")
+                                
+                                print("=" * 80 + "\n")
+                                return
+                        except Exception as e:
+                            # Если не удалось проверить, продолжаем ожидание
+                            print(f"⚠ Ошибка при проверке авторизации: {e}")
                     
-                    # Показываем прогресс
+                    # Показываем прогресс (реже, чтобы не спамить)
                     elapsed = int(time.time() - start_time)
                     if elapsed % 30 == 0 and elapsed > 0:
                         remaining = timeout - elapsed
@@ -1034,28 +1047,48 @@ class PinterestSeleniumParser:
             print("ПОЛУЧЕНИЕ ИНФОРМАЦИИ ОБ АККАУНТЕ")
             print("=" * 80)
             
-            # Переходим на /me
-            self.driver.get(PinterestURLs.USER_ME)
+            # Проверяем что драйвер доступен
+            try:
+                self.driver.current_url
+            except Exception as e:
+                print(f"⚠ Ошибка доступа к драйверу: {e}")
+                return None
             
-            # Ждем загрузки и редиректа
+            # Переходим на /me
+            try:
+                self.driver.get(PinterestURLs.USER_ME)
+            except Exception as e:
+                print(f"⚠ Ошибка при переходе на /me: {e}")
+                return None
+            
+            # Ждем загрузки и редиректа (с таймаутом)
             try:
                 WebDriverWait(self.driver, 10).until(
                     lambda d: '/me' not in d.current_url or 'pinterest.com' in d.current_url
                 )
-            except:
-                time.sleep(3)
+            except Exception as e:
+                print(f"⚠ Таймаут ожидания редиректа: {e}")
+                time.sleep(2)  # Минимальная задержка вместо долгого ожидания
             
             # URL должен измениться на /username/
-            current_url = self.driver.current_url
+            try:
+                current_url = self.driver.current_url
+            except Exception as e:
+                print(f"⚠ Ошибка получения URL: {e}")
+                return None
+                
             print(f"Текущий URL: {current_url}")
             
             # Извлекаем имя пользователя из URL
             username = None
             if '/me' not in current_url:
                 # URL вида: https://ru.pinterest.com/username/ или /username/_pins/
-                parts = current_url.replace('https://ru.pinterest.com/', '').replace('https://www.pinterest.com/', '').split('/')
-                if parts and parts[0]:
-                    username = parts[0]
+                try:
+                    parts = current_url.replace('https://ru.pinterest.com/', '').replace('https://www.pinterest.com/', '').split('/')
+                    if parts and parts[0] and parts[0] not in ['', 'login', 'business']:
+                        username = parts[0]
+                except Exception as e:
+                    print(f"⚠ Ошибка извлечения username из URL: {e}")
             
             account_info = {
                 'username': username or '',
@@ -1064,38 +1097,51 @@ class PinterestSeleniumParser:
                 'boards_url': f"https://ru.pinterest.com/{username}/_boards/" if username else ''
             }
             
-            # Пробуем извлечь дополнительную информацию со страницы
+            # Пробуем извлечь дополнительную информацию со страницы (быстро, без долгого ожидания)
             try:
-                page_source = self.driver.page_source
+                # Получаем page_source с таймаутом
+                page_source = None
+                try:
+                    page_source = self.driver.page_source
+                except Exception as e:
+                    print(f"⚠ Не удалось получить page_source: {e}")
                 
-                # Ищем имя пользователя на странице
-                if not username:
-                    # Пробуем найти в различных местах
+                if page_source:
+                    # Ищем имя пользователя на странице (быстро, без долгого ожидания)
+                    if not username:
+                        try:
+                            # Используем find_elements без ожидания для быстроты
+                            username_elements = self.driver.find_elements(By.CSS_SELECTOR, 
+                                'h1, [data-test-id="user-name"], [class*="username"], [class*="UserName"]')[:5]
+                            for elem in username_elements:
+                                try:
+                                    text = elem.text.strip()
+                                    if text and len(text) < 50 and not text.startswith('http'):
+                                        account_info['display_name'] = text
+                                        break
+                                except:
+                                    continue
+                        except:
+                            pass
+                    
+                    # Ищем количество пинов и досок (быстро, без долгого ожидания)
                     try:
-                        username_elements = self.driver.find_elements(By.CSS_SELECTOR, 
-                            'h1, [data-test-id="user-name"], [class*="username"], [class*="UserName"]')
-                        for elem in username_elements:
-                            text = elem.text.strip()
-                            if text and len(text) < 50 and not text.startswith('http'):
-                                account_info['display_name'] = text
-                                break
+                        stats_elements = self.driver.find_elements(By.CSS_SELECTOR, 
+                            '[class*="stat"], [class*="count"], [class*="Stat"]')[:10]
+                        for elem in stats_elements:
+                            try:
+                                text = elem.text.strip()
+                                if 'пин' in text.lower() or 'pin' in text.lower():
+                                    account_info['pins_count'] = text
+                                elif 'доск' in text.lower() or 'board' in text.lower():
+                                    account_info['boards_count'] = text
+                            except:
+                                continue
                     except:
                         pass
-                
-                # Ищем количество пинов и досок
-                try:
-                    stats_elements = self.driver.find_elements(By.CSS_SELECTOR, 
-                        '[class*="stat"], [class*="count"], [class*="Stat"]')
-                    for elem in stats_elements:
-                        text = elem.text.strip()
-                        if 'пин' in text.lower() or 'pin' in text.lower():
-                            account_info['pins_count'] = text
-                        elif 'доск' in text.lower() or 'board' in text.lower():
-                            account_info['boards_count'] = text
-                except:
-                    pass
-            except:
-                pass
+            except Exception as e:
+                print(f"⚠ Ошибка при извлечении дополнительной информации: {e}")
+                # Продолжаем даже если не удалось получить дополнительную информацию
             
             if username:
                 print(f"✓ Имя пользователя: {username}")
