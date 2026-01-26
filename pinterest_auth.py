@@ -65,6 +65,9 @@ class PinterestAuth:
     
     def _setup_driver(self):
         """Настраивает и запускает Chrome драйвер"""
+        import platform
+        import subprocess
+        
         chrome_options = Options()
         
         if self.headless:
@@ -76,15 +79,97 @@ class PinterestAuth:
         chrome_options.add_argument(f'user-agent={PinterestConfig.USER_AGENT}')
         chrome_options.add_argument('--window-size=1920,1080')
         
+        # Дополнительные аргументы для macOS
+        if platform.system() == 'Darwin':
+            chrome_options.add_argument('--disable-gpu')
+            chrome_options.add_argument('--remote-debugging-port=9223')
+            # Для macOS может потребоваться явное указание пути к Chrome
+            chrome_paths = [
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+                '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary'
+            ]
+            for chrome_path in chrome_paths:
+                if os.path.exists(chrome_path):
+                    chrome_options.binary_location = chrome_path
+                    break
+        
         # Отключаем логи
         chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
         
         try:
-            service = Service(ChromeDriverManager().install())
+            driver_path = ChromeDriverManager().install()
+            
+            # Для macOS: убираем карантин и проверяем кодовую подпись
+            if platform.system() == 'Darwin':
+                # Множественные попытки удаления карантина
+                quarantine_removed = False
+                for attempt in range(3):
+                    try:
+                        # Способ 1: Удаляем конкретный атрибут карантина
+                        result = subprocess.run(
+                            ['xattr', '-d', 'com.apple.quarantine', driver_path],
+                            stderr=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            timeout=10
+                        )
+                        if result.returncode == 0:
+                            quarantine_removed = True
+                            print(f"✓ Карантин удален (попытка {attempt + 1})")
+                            break
+                    except Exception as e:
+                        pass
+                    
+                    try:
+                        # Способ 2: Удаляем все расширенные атрибуты
+                        result = subprocess.run(
+                            ['xattr', '-c', driver_path],
+                            stderr=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            timeout=10
+                        )
+                        if result.returncode == 0:
+                            quarantine_removed = True
+                            print(f"✓ Все расширенные атрибуты удалены (попытка {attempt + 1})")
+                            break
+                    except Exception as e:
+                        pass
+                    
+                    if attempt < 2:
+                        time.sleep(0.5)
+                
+                # Проверяем права доступа на файл
+                if os.path.exists(driver_path):
+                    # Делаем файл исполняемым
+                    try:
+                        os.chmod(driver_path, 0o755)
+                        print("✓ Права доступа установлены на драйвер")
+                    except Exception as e:
+                        print(f"⚠ Не удалось установить права: {e}")
+                
+                # Дополнительная проверка: пробуем запустить драйвер напрямую для проверки
+                if not quarantine_removed:
+                    print("⚠ Не удалось автоматически удалить карантин")
+                    print(f"  Путь к драйверу: {driver_path}")
+                    print("  Попробуйте выполнить вручную в терминале:")
+                    print(f"  xattr -d com.apple.quarantine '{driver_path}'")
+            
+            service = Service(driver_path)
+            
+            # Дополнительные настройки для Service в macOS
+            if platform.system() == 'Darwin':
+                # Убеждаемся, что путь к драйверу абсолютный
+                driver_path = os.path.abspath(driver_path)
+                service = Service(driver_path)
+            
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
             print("✓ Chrome драйвер запущен для авторизации")
         except Exception as e:
             print(f"Ошибка при запуске Chrome драйвера: {e}")
+            if platform.system() == 'Darwin':
+                print("\nДля macOS:")
+                print("1. Убедитесь, что Google Chrome установлен в /Applications/")
+                print("2. Если драйвер заблокирован, выполните в терминале:")
+                print(f"   xattr -d com.apple.quarantine ~/.wdm/drivers/chromedriver/*/chromedriver-mac-arm64/chromedriver")
             raise
     
     def check_existing_session(self) -> bool:

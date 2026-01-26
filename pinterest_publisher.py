@@ -75,15 +75,242 @@ class PinterestPublisher:
             print(f"Ошибка при запуске Chrome драйвера: {e}")
             raise
     
-    def get_user_boards(self) -> List[Dict[str, str]]:
+    def get_boards_from_creation_tool(self) -> List[Dict[str, str]]:
         """
-        Получает список досок пользователя.
+        Получает список всех досок через страницу создания пина (pin-creation-tool).
+        Открывает модальное окно выбора доски и парсит все доступные доски.
         
         Returns:
             Список словарей с информацией о досках
         """
+        boards = []
         try:
-            # Используем парсер для получения досок
+            print("\nПолучение досок через pin-creation-tool...")
+            # Переходим на страницу создания пина
+            self.driver.get(self.PIN_CREATION_URL)
+            time.sleep(3)
+            
+            # Ждем загрузки страницы
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+                )
+            except:
+                time.sleep(2)
+            
+            # Ищем поле выбора доски
+            print("  Поиск поля выбора доски...")
+            board_field = None
+            
+            # Способ 1: Поиск по тексту/placeholder
+            try:
+                all_elements = self.driver.find_elements(By.XPATH,
+                    "//*[contains(text(), 'Доска') or contains(text(), 'Board') or contains(@placeholder, 'доск') or contains(@placeholder, 'board')]")
+                for elem in all_elements:
+                    try:
+                        if elem.is_displayed():
+                            # Проверяем что это не в header/nav
+                            is_in_header = elem.find_elements(By.XPATH, './ancestor::header | ./ancestor::nav')
+                            if not is_in_header:
+                                board_field = elem
+                                print(f"  ✓ Найдено поле выбора доски: {elem.tag_name}")
+                                break
+                    except:
+                        continue
+            except:
+                pass
+            
+            # Способ 2: Поиск через input/button/div
+            if not board_field:
+                try:
+                    all_inputs = self.driver.find_elements(By.TAG_NAME, 'input')
+                    all_buttons = self.driver.find_elements(By.TAG_NAME, 'button')
+                    all_divs = self.driver.find_elements(By.XPATH, "//div[@role='button']")
+                    
+                    for elem in all_inputs + all_buttons + all_divs:
+                        try:
+                            if not elem.is_displayed():
+                                continue
+                            placeholder = elem.get_attribute('placeholder') or ''
+                            aria_label = elem.get_attribute('aria-label') or ''
+                            text = elem.text.strip() or ''
+                            
+                            if ('доск' in placeholder.lower() or 'board' in placeholder.lower() or
+                                'доск' in aria_label.lower() or 'board' in aria_label.lower() or
+                                'доск' in text.lower() or 'board' in text.lower()):
+                                is_in_header = elem.find_elements(By.XPATH, './ancestor::header | ./ancestor::nav')
+                                if not is_in_header:
+                                    board_field = elem
+                                    print(f"  ✓ Найдено поле выбора доски: {elem.tag_name}")
+                                    break
+                        except:
+                            continue
+                except:
+                    pass
+            
+            if not board_field:
+                print("  ⚠ Поле выбора доски не найдено")
+                return []
+            
+            # Кликаем на поле выбора доски
+            print("  Открытие модального окна с досками...")
+            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", board_field)
+            time.sleep(1)
+            
+            try:
+                board_field.click()
+            except:
+                try:
+                    self.driver.execute_script("arguments[0].click();", board_field)
+                except:
+                    print("  ⚠ Не удалось кликнуть на поле доски")
+                    return []
+            
+            # Ждем открытия модального окна
+            print("  Ожидание открытия модального окна...")
+            modal_visible = False
+            for attempt in range(10):
+                try:
+                    modals = self.driver.find_elements(By.CSS_SELECTOR,
+                        'div[role="dialog"], div[class*="modal"], div[class*="overlay"], div[class*="BoardPicker"]')
+                    search_inputs = self.driver.find_elements(By.CSS_SELECTOR,
+                        'input[placeholder*="Поиск" i], input[placeholder*="Search" i]')
+                    if modals or search_inputs:
+                        visible_modals = [m for m in modals if m.is_displayed()]
+                        visible_search = [s for s in search_inputs if s.is_displayed()]
+                        if visible_modals or visible_search:
+                            modal_visible = True
+                            print(f"  ✓ Модальное окно открыто (попытка {attempt + 1})")
+                            break
+                except:
+                    pass
+                if attempt < 9:
+                    time.sleep(0.5)
+            
+            if not modal_visible:
+                print("  ⚠ Модальное окно не открылось")
+                return []
+            
+            # Дополнительное ожидание для загрузки досок
+            time.sleep(2)
+            
+            # Прокручиваем модальное окно для загрузки всех досок
+            print("  Прокрутка модального окна для загрузки всех досок...")
+            try:
+                modal = self.driver.find_elements(By.CSS_SELECTOR, 'div[role="dialog"]')[0]
+                for i in range(5):
+                    self.driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight;", modal)
+                    time.sleep(1)
+            except:
+                # Прокручиваем всю страницу
+                for i in range(5):
+                    self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                    time.sleep(1)
+            
+            time.sleep(2)
+            
+            # Парсим все доски из модального окна
+            print("  Парсинг досок из модального окна...")
+            seen_boards = set()
+            
+            # Ищем элементы с названиями досок
+            board_elements = self.driver.find_elements(By.XPATH,
+                "//div[@role='dialog']//*[text() and not(self::input) and not(self::textarea) and not(self::button)]")
+            
+            for elem in board_elements:
+                try:
+                    if not elem.is_displayed():
+                        continue
+                    
+                    text = elem.text.strip()
+                    if not text or len(text) > 100 or len(text) < 1:
+                        continue
+                    
+                    text_lower = text.lower()
+                    # Исключаем служебные тексты
+                    excluded = ['поиск', 'search', 'создать', 'create', 'все доски', 'all boards', 
+                               'найдена доска', 'board found', 'выберите доску', 'select board',
+                               'закрыть', 'close', 'отмена', 'cancel']
+                    
+                    if any(ex in text_lower for ex in excluded):
+                        continue
+                    
+                    # Проверяем что это не кнопка или ссылка на другую страницу
+                    parent = elem.find_element(By.XPATH, './..')
+                    parent_tag = parent.tag_name.lower()
+                    if parent_tag in ['button', 'a']:
+                        continue
+                    
+                    # Проверяем что текст не начинается с символов (эмодзи, иконки)
+                    if text[0] in ['_', '-', '•', '·']:
+                        continue
+                    
+                    if text not in seen_boards:
+                        seen_boards.add(text)
+                        boards.append({
+                            'board_name': text,
+                            'board_url': ''  # URL не нужен для выбора
+                        })
+                        print(f"    ✓ Найдена доска: {text}")
+                except:
+                    continue
+            
+            # Также ищем через более специфичные селекторы
+            try:
+                # Ищем элементы с data-атрибутами или специальными классами
+                specific_boards = self.driver.find_elements(By.CSS_SELECTOR,
+                    'div[role="dialog"] [data-test-id*="board"], div[role="dialog"] [class*="Board"]')
+                for elem in specific_boards:
+                    try:
+                        if not elem.is_displayed():
+                            continue
+                        text = elem.text.strip()
+                        if text and text not in seen_boards and 1 < len(text) < 100:
+                            text_lower = text.lower()
+                            if not any(ex in text_lower for ex in excluded):
+                                seen_boards.add(text)
+                                boards.append({
+                                    'board_name': text,
+                                    'board_url': ''
+                                })
+                                print(f"    ✓ Найдена доска (спец. селектор): {text}")
+                    except:
+                        continue
+            except:
+                pass
+            
+            # Закрываем модальное окно (ESC или клик вне окна)
+            try:
+                from selenium.webdriver.common.keys import Keys
+                self.driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
+                time.sleep(1)
+            except:
+                pass
+            
+            print(f"  ✓ Всего найдено досок: {len(boards)}")
+            return boards
+            
+        except Exception as e:
+            print(f"  ⚠ Ошибка при получении досок через pin-creation-tool: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    def get_user_boards(self) -> List[Dict[str, str]]:
+        """
+        Получает список досок пользователя.
+        Сначала пытается через pin-creation-tool, затем через парсер.
+        
+        Returns:
+            Список словарей с информацией о досках
+        """
+        # Пробуем получить доски через pin-creation-tool (самый актуальный способ)
+        boards = self.get_boards_from_creation_tool()
+        if boards:
+            return boards
+        
+        # Если не получилось, используем парсер
+        try:
             if hasattr(self, 'parser') and self.parser:
                 account_info = self.parser.get_account_info()
                 if account_info:
@@ -91,58 +318,10 @@ class PinterestPublisher:
                     if username:
                         boards = self.parser.parse_user_boards(username=username)
                         return boards
-            
-            # Если парсера нет, получаем доски напрямую
-            # Переходим на страницу досок
-            self.driver.get("https://ru.pinterest.com/me")
-            time.sleep(3)
-            
-            # Извлекаем username из URL
-            current_url = self.driver.current_url
-            if '/me' not in current_url:
-                parts = current_url.replace('https://ru.pinterest.com/', '').split('/')
-                if parts and parts[0]:
-                    username = parts[0]
-                    boards_url = f"https://ru.pinterest.com/{username}/_boards/"
-                    self.driver.get(boards_url)
-                    time.sleep(3)
-                    
-                    # Парсим доски
-                    boards = []
-                    board_links = self.driver.find_elements(By.CSS_SELECTOR, f'a[href*="/{username}/"]')
-                    seen_boards = set()
-                    
-                    for link in board_links:
-                        try:
-                            href = link.get_attribute('href')
-                            if not href or href in seen_boards:
-                                continue
-                            
-                            excluded_paths = ['/_pins/', '/_boards/', '/_created/', '/_saved/', '/pin/', '/settings/', '/account/']
-                            is_excluded = any(excluded in href for excluded in excluded_paths)
-                            is_profile = href.rstrip('/').endswith(f'/{username}')
-                            
-                            if (f'/{username}/' in href and 
-                                not is_excluded and
-                                not is_profile and
-                                '/pin/' not in href and
-                                href.count('/') >= 3):
-                                
-                                seen_boards.add(href)
-                                board_name = href.rstrip('/').split('/')[-1]
-                                boards.append({
-                                    'board_name': board_name,
-                                    'board_url': href
-                                })
-                        except:
-                            continue
-                    
-                    return boards
-            
-            return []
         except Exception as e:
-            print(f"Ошибка при получении досок: {e}")
-            return []
+            print(f"Ошибка при получении досок через парсер: {e}")
+        
+        return []
     
     def create_pin(self, image_path: str, title: str, description: str, 
                    link: str, board_name: str) -> bool:
@@ -207,13 +386,35 @@ class PinterestPublisher:
                 except:
                     pass
                 
-                # Способ 2: Прямой поиск input[type="file"]
+                # Способ 2: Поиск всех input[type="file"] и выбираем видимый/активный
+                if not file_input:
+                    try:
+                        all_file_inputs = self.driver.find_elements(By.CSS_SELECTOR, 'input[type="file"]')
+                        for inp in all_file_inputs:
+                            try:
+                                # Проверяем что элемент доступен (даже если не видим, может быть скрыт но активен)
+                                inp_id = inp.get_attribute('id') or ''
+                                if 'upload' in inp_id.lower() or 'storyboard' in inp_id.lower():
+                                    file_input = inp
+                                    print(f"✓ Найдено поле загрузки (способ 2): {inp_id or 'без ID'}")
+                                    break
+                                # Или берем первый доступный
+                                if not file_input:
+                                    file_input = inp
+                                    print(f"✓ Найдено поле загрузки (способ 2): первый доступный input[type='file']")
+                            except:
+                                continue
+                    except:
+                        pass
+                
+                # Способ 3: Поиск через data-атрибуты или другие селекторы
                 if not file_input:
                     try:
                         file_input = WebDriverWait(self.driver, 5).until(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, 'input[type="file"]'))
+                            EC.presence_of_element_located((By.CSS_SELECTOR, 
+                                'input[data-test-id*="upload"], input[data-test-id*="file"], input[name*="file"]'))
                         )
-                        print("✓ Найдено поле загрузки (способ 2)")
+                        print("✓ Найдено поле загрузки (способ 3: data-атрибут)")
                     except:
                         pass
                 
@@ -333,49 +534,99 @@ class PinterestPublisher:
                         
                         if modal_visible:
                             # Ищем доску в модальном окне
-                            print("  Поиск доски в модальном окне...")
-                            board_options = self.driver.find_elements(By.XPATH,
-                                f"//div[@role='dialog']//*[contains(text(), '{board_name}') and not(self::input) and not(self::textarea)]")
-                            board_options = [opt for opt in board_options 
-                                           if opt.is_displayed() and len(opt.text.strip()) < 100]
+                            print(f"  Поиск доски '{board_name}' в модальном окне...")
                             
-                            if not board_options:
-                                # Ищем все доски и выбираем первую доступную
-                                all_boards = self.driver.find_elements(By.XPATH,
-                                    "//div[@role='dialog']//*[text() and not(self::input) and not(self::textarea)]")
-                                for elem in all_boards:
-                                    try:
-                                        text = elem.text.strip()
-                                        if text and len(text) < 50 and len(text) > 0:
-                                            text_lower = text.lower()
-                                            if ('поиск' not in text_lower and 'search' not in text_lower and 
-                                                'создать' not in text_lower and 'create' not in text_lower and
-                                                'все доски' not in text_lower and 'all boards' not in text_lower and
-                                                'найдена доска' not in text_lower):
-                                                try:
-                                                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
-                                                    time.sleep(0.5)
-                                                    self.driver.execute_script("arguments[0].click();", elem)
-                                                    board_selected = True
-                                                    print(f"✓ Доска выбрана: '{text}'")
-                                                    time.sleep(2)
-                                                    break
-                                                except:
-                                                    continue
-                                    except:
-                                        continue
-                            else:
+                            # Сначала ищем точное совпадение или частичное
+                            board_options = []
+                            try:
+                                # Ищем по тексту
+                                board_options = self.driver.find_elements(By.XPATH,
+                                    f"//div[@role='dialog']//*[contains(text(), '{board_name}') and not(self::input) and not(self::textarea)]")
+                                board_options = [opt for opt in board_options 
+                                               if opt.is_displayed() and len(opt.text.strip()) < 100]
+                                
+                                # Также ищем через более широкий поиск
+                                if not board_options:
+                                    all_text_elements = self.driver.find_elements(By.XPATH,
+                                        "//div[@role='dialog']//*[text() and not(self::input) and not(self::textarea) and not(self::button)]")
+                                    for elem in all_text_elements:
+                                        try:
+                                            text = elem.text.strip()
+                                            if text and board_name.lower() in text.lower() and len(text) < 100:
+                                                if elem.is_displayed():
+                                                    board_options.append(elem)
+                                        except:
+                                            continue
+                            except:
+                                pass
+                            
+                            if board_options:
                                 # Выбираем найденную доску
                                 for option in board_options:
                                     try:
-                                        if board_name.lower() in option.text.strip().lower():
-                                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", option)
+                                        option_text = option.text.strip()
+                                        if board_name.lower() in option_text.lower():
+                                            # Прокручиваем к элементу
+                                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", option)
                                             time.sleep(0.5)
-                                            self.driver.execute_script("arguments[0].click();", option)
+                                            
+                                            # Пробуем кликнуть
+                                            try:
+                                                option.click()
+                                            except:
+                                                self.driver.execute_script("arguments[0].click();", option)
+                                            
                                             board_selected = True
-                                            print(f"✓ Доска выбрана: {board_name}")
+                                            print(f"✓ Доска выбрана: {option_text}")
                                             time.sleep(2)
                                             break
+                                    except Exception as e:
+                                        print(f"  ⚠ Ошибка при выборе доски: {e}")
+                                        continue
+                            else:
+                                # Если точного совпадения нет, ищем все доски и выбираем первую подходящую
+                                print("  Точное совпадение не найдено, ищем все доски...")
+                                all_boards = self.driver.find_elements(By.XPATH,
+                                    "//div[@role='dialog']//*[text() and not(self::input) and not(self::textarea) and not(self::button)]")
+                                
+                                excluded_texts = ['поиск', 'search', 'создать', 'create', 'все доски', 'all boards',
+                                                 'найдена доска', 'board found', 'выберите доску', 'select board',
+                                                 'закрыть', 'close', 'отмена', 'cancel', 'новый', 'new']
+                                
+                                for elem in all_boards:
+                                    try:
+                                        if not elem.is_displayed():
+                                            continue
+                                        
+                                        text = elem.text.strip()
+                                        if not text or len(text) > 100 or len(text) < 1:
+                                            continue
+                                        
+                                        text_lower = text.lower()
+                                        # Пропускаем служебные тексты
+                                        if any(ex in text_lower for ex in excluded_texts):
+                                            continue
+                                        
+                                        # Пропускаем если начинается с символов
+                                        if text[0] in ['_', '-', '•', '·', '#']:
+                                            continue
+                                        
+                                        # Если это похоже на название доски, выбираем
+                                        try:
+                                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", elem)
+                                            time.sleep(0.5)
+                                            
+                                            try:
+                                                elem.click()
+                                            except:
+                                                self.driver.execute_script("arguments[0].click();", elem)
+                                            
+                                            board_selected = True
+                                            print(f"✓ Доска выбрана (первая доступная): '{text}'")
+                                            time.sleep(2)
+                                            break
+                                        except Exception as e:
+                                            continue
                                     except:
                                         continue
             except Exception as e:
@@ -610,11 +861,20 @@ class PinterestPublisher:
                             print(f"✓ Описание заполнено через JS: {description}")
                         except:
                             # Если JS не сработал, пробуем обычный способ
-                            desc_field.click()
-                            time.sleep(0.5)
-                            desc_field.clear()
-                            desc_field.send_keys(description)
-                            print(f"✓ Описание заполнено: {description}")
+                            try:
+                                desc_field.click()
+                                time.sleep(0.5)
+                                # Пробуем clear только если элемент готов
+                                if desc_field.is_enabled() and desc_field.is_displayed():
+                                    try:
+                                        desc_field.clear()
+                                    except:
+                                        # Если clear не работает, используем только send_keys
+                                        pass
+                                desc_field.send_keys(description)
+                                print(f"✓ Описание заполнено: {description}")
+                            except Exception as e:
+                                print(f"⚠ Ошибка при заполнении описания через send_keys: {e}")
                 else:
                     print("⚠ Поле описания не найдено по селекторам, пробуем альтернативный метод...")
                     # Пробуем найти все textarea и contenteditable и использовать второй как описание
@@ -851,7 +1111,17 @@ class PinterestPublisher:
                 
                 # Проверяем поле ссылки
                 try:
-                    link_field = self.driver.find_element(By.ID, 'WebsiteField')
+                    # Ждем, пока элемент станет доступным
+                    link_field = WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.ID, 'WebsiteField'))
+                    )
+                    
+                    # Проверяем, что элемент видим и готов
+                    if not link_field.is_displayed():
+                        print("  ⚠ Поле ссылки не видимо, прокручиваем...")
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link_field)
+                        time.sleep(1)
+                    
                     current_link = link_field.get_attribute('value') or ''
                     print(f"  Текущее значение ссылки: '{current_link}'")
                     if not current_link or current_link.strip() != link.strip():
@@ -859,28 +1129,54 @@ class PinterestPublisher:
                         # Прокручиваем к полю
                         self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link_field)
                         time.sleep(0.5)
-                        # Кликаем на поле
-                        link_field.click()
+                        
+                        # Пробуем очистить через JS (безопаснее)
+                        try:
+                            self.driver.execute_script("arguments[0].value = '';", link_field)
+                            time.sleep(0.2)
+                        except:
+                            pass
+                        
+                        # Пробуем кликнуть и очистить через Selenium (только если элемент готов)
+                        try:
+                            # Ждем, пока элемент станет кликабельным
+                            WebDriverWait(self.driver, 5).until(
+                                EC.element_to_be_clickable(link_field)
+                            )
+                            link_field.click()
+                            time.sleep(0.3)
+                            # Очищаем через Selenium только если элемент готов
+                            if link_field.is_enabled() and link_field.is_displayed():
+                                try:
+                                    link_field.clear()
+                                except:
+                                    # Если clear не работает, используем только JS
+                                    pass
+                        except:
+                            # Если клик не работает, используем только JS
+                            print("  Используем только JavaScript для заполнения...")
+                        
                         time.sleep(0.3)
-                        # Очищаем поле полностью
-                        link_field.clear()
-                        time.sleep(0.3)
-                        # Также очищаем через JS
-                        self.driver.execute_script("arguments[0].value = '';", link_field)
-                        time.sleep(0.2)
-                        # Заполняем через JS
+                        
+                        # Заполняем через JS (надежнее)
                         self.driver.execute_script("arguments[0].value = arguments[1];", link_field, link)
                         self.driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", link_field)
                         self.driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", link_field)
                         time.sleep(0.5)
+                        
                         # Проверяем, что значение установилось
                         verify_link = link_field.get_attribute('value') or ''
                         if verify_link.strip() != link.strip():
                             # Если не сработало, пробуем через send_keys (только если поле пустое)
                             if not verify_link.strip():
-                                link_field.send_keys(link)
-                                time.sleep(0.5)
-                                verify_link = link_field.get_attribute('value') or ''
+                                try:
+                                    # Убеждаемся, что элемент готов
+                                    if link_field.is_enabled() and link_field.is_displayed():
+                                        link_field.send_keys(link)
+                                        time.sleep(0.5)
+                                        verify_link = link_field.get_attribute('value') or ''
+                                except:
+                                    pass
                         print(f"  ✓ Ссылка восстановлена: '{verify_link}'")
                     else:
                         print(f"  ✓ Ссылка уже заполнена: '{current_link}'")
@@ -1245,8 +1541,17 @@ class PinterestPublisher:
                                 
                                 if input_field:
                                     print("  ✓ Найдено поле поиска в модальном окне")
-                                    # Очищаем поле
-                                    input_field.clear()
+                                    # Очищаем поле (с проверкой готовности)
+                                    try:
+                                        if input_field.is_enabled() and input_field.is_displayed():
+                                            try:
+                                                input_field.clear()
+                                            except:
+                                                # Если clear не работает, используем JS
+                                                self.driver.execute_script("arguments[0].value = '';", input_field)
+                                    except:
+                                        # Если не удалось, используем только JS
+                                        self.driver.execute_script("arguments[0].value = '';", input_field)
                                     time.sleep(0.5)
                                     
                                     # Вводим название доски
@@ -1659,23 +1964,50 @@ class PinterestPublisher:
                 
                 # Проверяем ссылку
                 try:
-                    link_field = self.driver.find_element(By.ID, 'WebsiteField')
+                    # Ждем, пока элемент станет доступным
+                    link_field = WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.ID, 'WebsiteField'))
+                    )
+                    
                     final_link = link_field.get_attribute('value') or ''
                     if not final_link or final_link.strip() != link.strip():
                         print(f"  ⚠ Ссылка пустая или неверная: '{final_link}', заполняем заново...")
-                        link_field.click()
-                        time.sleep(0.3)
-                        link_field.clear()
-                        time.sleep(0.3)
+                        
+                        # Прокручиваем к полю
+                        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", link_field)
+                        time.sleep(0.5)
+                        
+                        # Очищаем через JS (безопаснее)
                         self.driver.execute_script("arguments[0].value = '';", link_field)
                         time.sleep(0.2)
+                        
+                        # Пробуем кликнуть и очистить через Selenium (только если элемент готов)
+                        try:
+                            if link_field.is_enabled() and link_field.is_displayed():
+                                WebDriverWait(self.driver, 5).until(
+                                    EC.element_to_be_clickable(link_field)
+                                )
+                                link_field.click()
+                                time.sleep(0.3)
+                                # Пробуем clear только если элемент готов
+                                try:
+                                    if link_field.is_enabled():
+                                        link_field.clear()
+                                except:
+                                    pass
+                        except:
+                            pass
+                        
+                        time.sleep(0.3)
+                        
+                        # Заполняем через JS
                         self.driver.execute_script("arguments[0].value = arguments[1];", link_field, link)
                         self.driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", link_field)
                         time.sleep(0.5)
                     else:
                         print(f"  ✓ Ссылка заполнена: '{final_link}'")
-                except:
-                    print("  ⚠ Не удалось проверить ссылку")
+                except Exception as e:
+                    print(f"  ⚠ Не удалось проверить ссылку: {e}")
                 
                 print("  Ожидание 2 секунды для сохранения всех полей...")
                 time.sleep(2)
@@ -1692,12 +2024,23 @@ class PinterestPublisher:
                 final_title = title_field.get_attribute('value') or ''
                 if not final_title or final_title.strip() != title.strip():
                     print(f"  ⚠ Название пустое или неверное: '{final_title}', заполняем...")
-                    title_field.click()
-                    time.sleep(0.3)
-                    title_field.clear()
-                    time.sleep(0.3)
-                    title_field.send_keys(title)
-                    time.sleep(0.5)
+                    try:
+                        title_field.click()
+                        time.sleep(0.3)
+                        # Пробуем clear только если элемент готов
+                        if title_field.is_enabled() and title_field.is_displayed():
+                            try:
+                                title_field.clear()
+                            except:
+                                # Если clear не работает, используем только send_keys
+                                pass
+                        time.sleep(0.3)
+                        title_field.send_keys(title)
+                        time.sleep(0.5)
+                    except Exception as e:
+                        print(f"  ⚠ Ошибка при заполнении названия: {e}")
+                        # Fallback на JS
+                        self.driver.execute_script("arguments[0].value = arguments[1];", title_field, title)
                     # Также через JS
                     self.driver.execute_script("arguments[0].value = arguments[1];", title_field, title)
                     self.driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", title_field)

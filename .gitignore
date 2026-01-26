@@ -39,3 +39,22 @@ cookies.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# PyInstaller
+build/
+dist/
+*.spec
+
+# Иконки (можно коммитить, но обычно они большие)
+icon.iconset/
+# icon.icns  # Раскомментируйте если не хотите коммитить иконку
+
+# Тестовые файлы
+test_chrome_driver.py
+create_icon.py
+
+# Временные файлы
+*.pyc
+__pycache__/
+*.py[cod]
+*$py.class

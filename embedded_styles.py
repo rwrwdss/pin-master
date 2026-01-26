@@ -1,0 +1,52 @@
+"""
+Встроенные стили PinMaster (fallback при отсутствии styles.qss в сборке).
+Должны совпадать с styles.qss.
+"""
+
+EMBEDDED_QSS = """
+* { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; font-size: 13px; }
+QMainWindow { background-color: #000000; }
+QWidget#sidebar { background-color: #1a1a1a; border-right: 1px solid #333333; min-width: 250px; max-width: 300px; }
+QPushButton#sidebarButton { background-color: transparent; border: none; text-align: left; padding: 12px 20px; border-radius: 8px; color: #e0e0e0; font-weight: 500; }
+QPushButton#sidebarButton:hover { background-color: #2a2a2a; }
+QPushButton#sidebarButton:pressed { background-color: #333333; }
+QPushButton#sidebarButton:checked { background-color: #39ff14; color: #000000; font-weight: 600; }
+QPushButton { background-color: #39ff14; color: #000000; border: none; border-radius: 8px; padding: 10px 20px; font-weight: 600; min-height: 36px; }
+QPushButton:hover { background-color: #32e60d; }
+QPushButton:pressed { background-color: #2bcc0a; }
+QPushButton:disabled { background-color: #2a2a2a; color: #666666; border: 1px solid #333333; }
+QLineEdit, QTextEdit { background-color: #1a1a1a; border: 1px solid #333333; border-radius: 8px; padding: 10px 12px; color: #e0e0e0; selection-background-color: #39ff14; selection-color: #000000; }
+QLineEdit:focus, QTextEdit:focus { border: 2px solid #39ff14; outline: none; }
+QLineEdit:hover, QTextEdit:hover { border-color: #444444; }
+QGroupBox { background-color: #1a1a1a; border: 1px solid #333333; border-radius: 12px; margin-top: 12px; padding-top: 20px; font-weight: 600; color: #e0e0e0; }
+QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; left: 16px; padding: 0 8px; background-color: #1a1a1a; color: #e0e0e0; }
+QLabel { color: #e0e0e0; }
+QTextEdit { background-color: #1a1a1a; border: 1px solid #333333; border-radius: 8px; padding: 16px; color: #e0e0e0; }
+QStatusBar { background-color: #1a1a1a; border-top: 1px solid #333333; color: #999999; padding: 8px; }
+QMenuBar { background-color: #1a1a1a; border-bottom: 1px solid #333333; color: #e0e0e0; padding: 4px; }
+QMenuBar::item { padding: 8px 16px; border-radius: 6px; background-color: transparent; }
+QMenuBar::item:selected { background-color: #2a2a2a; }
+QMenu { background-color: #1a1a1a; border: 1px solid #333333; border-radius: 8px; padding: 8px; }
+QMenu::item { padding: 8px 24px; border-radius: 6px; color: #e0e0e0; }
+QMenu::item:selected { background-color: #2a2a2a; }
+QMenu::separator { height: 1px; background-color: #333333; margin: 4px 8px; }
+QScrollBar:vertical { background-color: #1a1a1a; width: 12px; border: none; border-radius: 6px; }
+QScrollBar::handle:vertical { background-color: #444444; border-radius: 6px; min-height: 30px; margin: 2px; }
+QScrollBar::handle:vertical:hover { background-color: #555555; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+QScrollBar:horizontal { background-color: #1a1a1a; height: 12px; border: none; border-radius: 6px; }
+QScrollBar::handle:horizontal { background-color: #444444; border-radius: 6px; min-width: 30px; margin: 2px; }
+QScrollBar::handle:horizontal:hover { background-color: #555555; }
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
+QWidget#centralArea { background-color: #000000; padding: 20px; }
+QComboBox { background-color: #1a1a1a; border: 1px solid #333333; border-radius: 8px; padding: 8px 12px; color: #e0e0e0; min-width: 120px; }
+QComboBox:hover { border-color: #444444; }
+QComboBox:focus { border: 2px solid #39ff14; }
+QComboBox::drop-down { border: none; width: 20px; }
+QComboBox::down-arrow { image: none; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 6px solid #39ff14; width: 0; height: 0; }
+QComboBox QAbstractItemView { background-color: #1a1a1a; border: 1px solid #333333; border-radius: 8px; color: #e0e0e0; selection-background-color: #39ff14; selection-color: #000000; }
+QSpinBox { background-color: #1a1a1a; border: 1px solid #333333; border-radius: 8px; padding: 8px 12px; color: #e0e0e0; }
+QProgressBar { background-color: #1a1a1a; border: 1px solid #333333; border-radius: 8px; text-align: center; color: #e0e0e0; }
+QProgressBar::chunk { background-color: #39ff14; border-radius: 6px; }
+QDialog { background-color: #1a1a1a; }
+"""

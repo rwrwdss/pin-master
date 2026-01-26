@@ -8,6 +8,8 @@ import json
 import os
 import uuid
 import requests
+import platform
+import subprocess
 from urllib.parse import urlparse
 from typing import List, Dict, Optional
 from selenium import webdriver
@@ -22,6 +24,12 @@ from bs4 import BeautifulSoup
 from pinterest_selectors import PinterestSelectors, PinterestURLs, PinterestConfig
 from cookies_manager import load_cookies_from_file
 from pinterest_auth import PinterestAuth
+
+try:
+    from path_utils import get_cookies_path, get_images_dir
+    USE_PATH_UTILS = True
+except ImportError:
+    USE_PATH_UTILS = False
 
 
 class PinterestSeleniumParser:
@@ -59,10 +67,17 @@ class PinterestSeleniumParser:
     
     def _setup_driver(self):
         """Настраивает и запускает Chrome драйвер"""
+        print("\n" + "=" * 80)
+        print("НАСТРОЙКА CHROME ДРАЙВЕРА")
+        print("=" * 80)
+        
         chrome_options = Options()
         
         if self.headless:
             chrome_options.add_argument('--headless')
+            print("✓ Режим: headless (фоновый)")
+        else:
+            print("✓ Режим: обычный (браузер виден)")
         
         chrome_options.add_argument('--no-sandbox')
         chrome_options.add_argument('--disable-dev-shm-usage')
@@ -70,17 +85,144 @@ class PinterestSeleniumParser:
         chrome_options.add_argument(f'user-agent={PinterestConfig.USER_AGENT}')
         chrome_options.add_argument('--window-size=1920,1080')
         
+        # Дополнительные аргументы для macOS
+        if platform.system() == 'Darwin':
+            print("✓ Платформа: macOS (Darwin)")
+            chrome_options.add_argument('--disable-gpu')
+            chrome_options.add_argument('--remote-debugging-port=9222')
+            # Для macOS может потребоваться явное указание пути к Chrome
+            chrome_paths = [
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+                '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary'
+            ]
+            chrome_found = False
+            for chrome_path in chrome_paths:
+                if os.path.exists(chrome_path):
+                    chrome_options.binary_location = chrome_path
+                    print(f"✓ Найден Chrome: {chrome_path}")
+                    chrome_found = True
+                    break
+            
+            if not chrome_found:
+                print("⚠ Chrome не найден в стандартных местах")
+        
         # Отключаем логи
         chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
         
         try:
-            service = Service(ChromeDriverManager().install())
+            print("\n📥 Установка/получение Chrome драйвера...")
+            driver_path = ChromeDriverManager().install()
+            print(f"✓ Путь к драйверу: {driver_path}")
+            
+            # Для macOS: убираем карантин и проверяем кодовую подпись
+            if platform.system() == 'Darwin':
+                # Множественные попытки удаления карантина
+                quarantine_removed = False
+                for attempt in range(3):
+                    try:
+                        # Способ 1: Удаляем конкретный атрибут карантина
+                        result = subprocess.run(
+                            ['xattr', '-d', 'com.apple.quarantine', driver_path],
+                            stderr=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            timeout=10
+                        )
+                        if result.returncode == 0:
+                            quarantine_removed = True
+                            print(f"✓ Карантин удален (попытка {attempt + 1})")
+                            break
+                    except Exception as e:
+                        pass
+                    
+                    try:
+                        # Способ 2: Удаляем все расширенные атрибуты
+                        result = subprocess.run(
+                            ['xattr', '-c', driver_path],
+                            stderr=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            timeout=10
+                        )
+                        if result.returncode == 0:
+                            quarantine_removed = True
+                            print(f"✓ Все расширенные атрибуты удалены (попытка {attempt + 1})")
+                            break
+                    except Exception as e:
+                        pass
+                    
+                    if attempt < 2:
+                        time.sleep(0.5)
+                
+                # Проверяем права доступа на файл
+                if os.path.exists(driver_path):
+                    # Делаем файл исполняемым
+                    try:
+                        os.chmod(driver_path, 0o755)
+                        print("✓ Права доступа установлены на драйвер")
+                    except Exception as e:
+                        print(f"⚠ Не удалось установить права: {e}")
+                
+                # Дополнительная проверка: пробуем запустить драйвер напрямую для проверки
+                if not quarantine_removed:
+                    print("⚠ Не удалось автоматически удалить карантин")
+                    print(f"  Путь к драйверу: {driver_path}")
+                    print("  Попробуйте выполнить вручную в терминале:")
+                    print(f"  xattr -d com.apple.quarantine '{driver_path}'")
+                    print(f"  или")
+                    print(f"  xattr -c '{driver_path}'")
+            
+            # Дополнительные настройки для Service в macOS
+            if platform.system() == 'Darwin':
+                # Убеждаемся, что путь к драйверу абсолютный
+                driver_path = os.path.abspath(driver_path)
+                print(f"✓ Абсолютный путь к драйверу: {driver_path}")
+            
+            print("\n🚀 Запуск Chrome драйвера...")
+            service = Service(driver_path)
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            print("✓ Chrome драйвер запущен")
+            print("✓ Chrome драйвер успешно запущен!")
+            print("=" * 80 + "\n")
         except Exception as e:
-            print(f"Ошибка при запуске Chrome драйвера: {e}")
+            error_msg = f"Ошибка при запуске Chrome драйвера: {e}"
+            print(error_msg)
             print("Убедитесь, что Chrome установлен на системе")
-            raise
+            
+            # Дополнительная информация для macOS
+            if platform.system() == 'Darwin':
+                print("\nДля macOS:")
+                print("1. Убедитесь, что Google Chrome установлен в /Applications/")
+                
+                # Пробуем найти точный путь к драйверу
+                try:
+                    driver_path = ChromeDriverManager().install()
+                    print(f"2. Путь к драйверу: {driver_path}")
+                    print("3. Если драйвер заблокирован, выполните в терминале:")
+                    print(f"   xattr -d com.apple.quarantine '{driver_path}'")
+                    print("   или")
+                    print(f"   xattr -c '{driver_path}'")
+                    print("   или")
+                    print(f"   chmod +x '{driver_path}'")
+                    
+                    # Проверяем наличие карантина
+                    try:
+                        result = subprocess.run(
+                            ['xattr', '-l', driver_path],
+                            stderr=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            timeout=5
+                        )
+                        if result.returncode == 0 and b'quarantine' in result.stdout:
+                            print(f"\n⚠ Обнаружен карантин на драйвере!")
+                            print(f"   Выполните: xattr -d com.apple.quarantine '{driver_path}'")
+                    except:
+                        pass
+                except:
+                    print("2. Не удалось определить путь к драйверу")
+                    print("   Попробуйте найти драйвер вручную:")
+                    print("   find ~/.wdm -name chromedriver -type f")
+            
+            print("=" * 80 + "\n")
+            self.driver = None
+            raise RuntimeError(f"Не удалось инициализировать Chrome драйвер. Убедитесь, что Chrome установлен. Детали: {e}")
     
     def _ensure_authentication(self):
         """Проверяет авторизацию и выполняет логин если нужно"""
@@ -90,7 +232,10 @@ class PinterestSeleniumParser:
             print("=" * 80)
             
             # Проверяем наличие cookies файла
-            cookies_file = self.cookies_file or "pinterest_cookies.json"
+            if USE_PATH_UTILS and not self.cookies_file:
+                cookies_file = str(get_cookies_path())
+            else:
+                cookies_file = self.cookies_file or "pinterest_cookies.json"
             if os.path.exists(cookies_file):
                 print(f"✓ Найден файл cookies: {cookies_file}")
                 # Пробуем загрузить cookies
@@ -240,7 +385,10 @@ class PinterestSeleniumParser:
                                             cookies_dict[cookie['name']] = cookie['value']
                                     
                                     if cookies_dict:
-                                        cookies_file = self.cookies_file or "pinterest_cookies.json"
+                                        if USE_PATH_UTILS and not self.cookies_file:
+                                            cookies_file = str(get_cookies_path())
+                                        else:
+                                            cookies_file = self.cookies_file or "pinterest_cookies.json"
                                         from cookies_manager import CookiesManager
                                         CookiesManager.save_to_json(cookies_dict, cookies_file)
                                         print(f"✓ Сессия сохранена: {len(cookies_dict)} cookies")
@@ -284,7 +432,11 @@ class PinterestSeleniumParser:
     def _create_images_directory(self):
         """Создает папку с рандомным названием для сохранения изображений"""
         random_name = str(uuid.uuid4())[:8]
-        self.images_dir = f"pinterest_images_{random_name}"
+        if USE_PATH_UTILS:
+            images_base = get_images_dir()
+            self.images_dir = str(images_base / f"pinterest_images_{random_name}")
+        else:
+            self.images_dir = f"pinterest_images_{random_name}"
         os.makedirs(self.images_dir, exist_ok=True)
         print(f"✓ Создана папка для изображений: {self.images_dir}")
     
