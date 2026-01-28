@@ -97,12 +97,31 @@ def get_images_dir() -> Path:
     return images_dir
 
 
-def get_csv_dir() -> Path:
-    """Возвращает директорию для CSV файлов"""
-    # CSV файлы в пользовательской директории
-    csv_dir = get_user_data_dir() / "csv"
+def get_csv_dir(date: Optional[str] = None) -> Path:
+    """
+    Возвращает директорию для CSV файлов.
+    Если указана дата (YYYY-MM-DD), создает подпапку с этой датой.
+    Если дата не указана, использует текущую дату.
+    """
+    base_csv_dir = get_user_data_dir() / "csv"
+    base_csv_dir.mkdir(parents=True, exist_ok=True)
+    
+    if date:
+        csv_dir = base_csv_dir / date
+    else:
+        from datetime import datetime
+        csv_dir = base_csv_dir / datetime.now().strftime("%Y-%m-%d")
+    
     csv_dir.mkdir(parents=True, exist_ok=True)
     return csv_dir
+
+
+def get_parsing_history_path() -> Path:
+    """Возвращает путь к файлу истории парсингов"""
+    if is_frozen():
+        return get_app_data_dir() / "parsing_history.json"
+    else:
+        return get_base_dir() / "parsing_history.json"
 
 
 def get_logs_dir() -> Path:

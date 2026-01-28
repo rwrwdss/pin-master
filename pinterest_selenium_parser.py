@@ -19,6 +19,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
+from chromedriver_helper import get_chromedriver_path
 from bs4 import BeautifulSoup
 
 from pinterest_selectors import PinterestSelectors, PinterestURLs, PinterestConfig
@@ -55,9 +56,10 @@ class PinterestSeleniumParser:
         self._setup_driver()
         
         # Проверяем авторизацию и логинимся если нужно
+        self.login_successful = False
         if self.auto_login:
             print(f"\n🔐 Авторизация включена (auto_login={self.auto_login})")
-            self._ensure_authentication()
+            self.login_successful = self._ensure_authentication()
         else:
             print(f"\nℹ Авторизация отключена (auto_login={self.auto_login})")
         
@@ -65,11 +67,99 @@ class PinterestSeleniumParser:
         if self.download_images:
             self._create_images_directory()
     
+    def _close_existing_browsers(self):
+        """Закрывает существующие окна браузера от парсера"""
+        try:
+            # Закрываем текущий драйвер если он существует
+            if self.driver:
+                try:
+                    print("  Закрываю существующий браузер...")
+                    self.driver.quit()
+                    print("  ✓ Существующий браузер закрыт")
+                except:
+                    pass
+                finally:
+                    self.driver = None
+            
+            # Закрываем процессы Chrome, связанные с Selenium/chromedriver
+            if platform.system() == 'Darwin':  # macOS
+                try:
+                    import subprocess
+                    closed_count = 0
+                    
+                    # Метод 1: Ищем процессы Chrome с remote-debugging-port (признак Selenium)
+                    try:
+                        result = subprocess.run(
+                            ['pgrep', '-f', 'remote-debugging-port'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0 and result.stdout.strip():
+                            pids = [p for p in result.stdout.strip().split('\n') if p]
+                            for pid in pids:
+                                try:
+                                    # Проверяем что это действительно Chrome процесс
+                                    ps_result = subprocess.run(
+                                        ['ps', '-p', pid, '-o', 'comm='],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=2
+                                    )
+                                    if 'Chrome' in ps_result.stdout or 'Google Chrome' in ps_result.stdout:
+                                        subprocess.run(['kill', '-9', pid], timeout=2, 
+                                                     stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+                                        closed_count += 1
+                                except:
+                                    pass
+                    except:
+                        pass
+                    
+                    # Метод 2: Ищем процессы Chrome с аргументами Selenium
+                    try:
+                        result = subprocess.run(
+                            ['pgrep', '-f', '--disable-blink-features=AutomationControlled'],
+                            capture_output=True,
+                            text=True,
+                            timeout=5
+                        )
+                        if result.returncode == 0 and result.stdout.strip():
+                            pids = [p for p in result.stdout.strip().split('\n') if p]
+                            for pid in pids:
+                                try:
+                                    # Проверяем что это Chrome и еще не закрыт
+                                    ps_result = subprocess.run(
+                                        ['ps', '-p', pid, '-o', 'comm='],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=2
+                                    )
+                                    if 'Chrome' in ps_result.stdout or 'Google Chrome' in ps_result.stdout:
+                                        subprocess.run(['kill', '-9', pid], timeout=2, 
+                                                     stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+                                        closed_count += 1
+                                except:
+                                    pass
+                    except:
+                        pass
+                    
+                    if closed_count > 0:
+                        print(f"  ✓ Закрыто {closed_count} старых процессов Chrome от парсера")
+                        time.sleep(1)  # Даем время для закрытия процессов
+                    
+                except Exception as e:
+                    print(f"  ⚠ Ошибка при закрытии процессов Chrome: {e}")
+        except Exception as e:
+            print(f"  ⚠ Ошибка при закрытии старых браузеров: {e}")
+    
     def _setup_driver(self):
         """Настраивает и запускает Chrome драйвер"""
         print("\n" + "=" * 80)
         print("НАСТРОЙКА CHROME ДРАЙВЕРА")
         print("=" * 80)
+        
+        # Закрываем старые окна браузера перед открытием нового
+        self._close_existing_browsers()
         
         chrome_options = Options()
         
@@ -83,13 +173,34 @@ class PinterestSeleniumParser:
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
         chrome_options.add_argument(f'user-agent={PinterestConfig.USER_AGENT}')
-        chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--window-size=1200,1080')
+        
+        # Дополнительные аргументы для стабильности
+        chrome_options.add_argument('--disable-extensions')
+        chrome_options.add_argument('--disable-background-networking')
+        chrome_options.add_argument('--disable-background-timer-throttling')
+        chrome_options.add_argument('--disable-renderer-backgrounding')
+        chrome_options.add_argument('--disable-backgrounding-occluded-windows')
+        chrome_options.add_argument('--disable-ipc-flooding-protection')
+        chrome_options.add_argument('--disable-hang-monitor')
+        chrome_options.add_argument('--disable-prompt-on-repost')
+        chrome_options.add_argument('--disable-sync')
+        chrome_options.add_argument('--disable-translate')
+        chrome_options.add_argument('--disable-features=TranslateUI')
+        chrome_options.add_argument('--disable-component-extensions-with-background-page')
+        chrome_options.add_argument('--disable-browser-side-navigation')
+        chrome_options.add_argument('--disable-infobars')
+        chrome_options.add_argument('--disable-notifications')
         
         # Дополнительные аргументы для macOS
         if platform.system() == 'Darwin':
             print("✓ Платформа: macOS (Darwin)")
             chrome_options.add_argument('--disable-gpu')
-            chrome_options.add_argument('--remote-debugging-port=9222')
+            # Используем случайный порт для избежания конфликтов
+            import random
+            debug_port = random.randint(9223, 9999)
+            chrome_options.add_argument(f'--remote-debugging-port={debug_port}')
+            print(f"✓ Remote debugging port: {debug_port}")
             # Для macOS может потребоваться явное указание пути к Chrome
             chrome_paths = [
                 '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -111,7 +222,7 @@ class PinterestSeleniumParser:
         
         try:
             print("\n📥 Установка/получение Chrome драйвера...")
-            driver_path = ChromeDriverManager().install()
+            driver_path = get_chromedriver_path()
             print(f"✓ Путь к драйверу: {driver_path}")
             
             # Для macOS: убираем карантин и проверяем кодовую подпись
@@ -178,9 +289,40 @@ class PinterestSeleniumParser:
             
             print("\n🚀 Запуск Chrome драйвера...")
             service = Service(driver_path)
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            print("✓ Chrome драйвер успешно запущен!")
-            print("=" * 80 + "\n")
+            
+            # Пробуем запустить с несколькими попытками
+            max_attempts = 3
+            driver_created = False
+            
+            for attempt in range(max_attempts):
+                try:
+                    if attempt > 0:
+                        print(f"Попытка {attempt + 1}/{max_attempts}...")
+                        time.sleep(2)  # Небольшая задержка между попытками
+                    
+                    self.driver = webdriver.Chrome(service=service, options=chrome_options)
+                    driver_created = True
+                    print("✓ Chrome драйвер успешно запущен!")
+                    print("=" * 80 + "\n")
+                    break
+                except Exception as e:
+                    error_str = str(e)
+                    if "unable to connect to renderer" in error_str.lower() or "session not created" in error_str.lower():
+                        if attempt < max_attempts - 1:
+                            print(f"⚠ Попытка {attempt + 1} не удалась: {error_str[:100]}")
+                            print("Пробую с дополнительными флагами...")
+                            # Добавляем дополнительные флаги для следующей попытки
+                            chrome_options.add_argument('--single-process')
+                            chrome_options.add_argument('--disable-software-rasterizer')
+                            continue
+                        else:
+                            raise
+                    else:
+                        raise
+            
+            if not driver_created:
+                raise RuntimeError("Не удалось запустить Chrome драйвер после всех попыток")
+                
         except Exception as e:
             error_msg = f"Ошибка при запуске Chrome драйвера: {e}"
             print(error_msg)
@@ -193,7 +335,7 @@ class PinterestSeleniumParser:
                 
                 # Пробуем найти точный путь к драйверу
                 try:
-                    driver_path = ChromeDriverManager().install()
+                    driver_path = get_chromedriver_path()
                     print(f"2. Путь к драйверу: {driver_path}")
                     print("3. Если драйвер заблокирован, выполните в терминале:")
                     print(f"   xattr -d com.apple.quarantine '{driver_path}'")
@@ -224,8 +366,13 @@ class PinterestSeleniumParser:
             self.driver = None
             raise RuntimeError(f"Не удалось инициализировать Chrome драйвер. Убедитесь, что Chrome установлен. Детали: {e}")
     
-    def _ensure_authentication(self):
-        """Проверяет авторизацию и выполняет логин если нужно"""
+    def _ensure_authentication(self) -> bool:
+        """
+        Проверяет авторизацию и выполняет логин если нужно
+        
+        Returns:
+            True если авторизация успешна, False иначе
+        """
         try:
             print("\n" + "=" * 80)
             print("ПРОВЕРКА АВТОРИЗАЦИИ")
@@ -309,7 +456,7 @@ class PinterestSeleniumParser:
                     if is_authorized:
                         print("✓ Используется существующая валидная сессия")
                         print("=" * 80 + "\n")
-                        return
+                        return True
                     else:
                         print(f"⚠ Сессия невалидна или истекла (URL: {current_url[:80]})")
                         # Проверяем есть ли кнопка "Войти" на странице
@@ -368,13 +515,49 @@ class PinterestSeleniumParser:
                         continue
                     
                     # Если мы не на странице логина, возможно пользователь залогинился
-                    if '/login' not in current_url.lower():
+                    if '/login' not in current_url.lower() and '/signup' not in current_url.lower():
                         # Проверяем признаки авторизации (быстро, без долгого ожидания)
                         try:
                             page_source = self.driver.page_source.lower()
-                            if 'create' in page_source or 'saved' in page_source or 'profile' in page_source:
+                            current_url_lower = current_url.lower()
+                            
+                            # Проверяем различные признаки авторизации:
+                            # 1. URL профиля пользователя (например, /uazis1/, /username/)
+                            # 2. Наличие кнопок/элементов авторизованного пользователя
+                            # 3. Отсутствие формы логина
+                            
+                            # Проверка URL профиля (паттерн: /username/ или /u/username/)
+                            url_parts = [x for x in current_url_lower.split('/') if x and x not in ['https:', '', 'www.', 'ru.', 'pinterest.com', 'pinterest']]
+                            is_profile_url = (
+                                len(url_parts) > 0 and 
+                                (url_parts[0] not in ['login', 'signup', 'business', 'help', 'about', 'terms', 'privacy']) and
+                                ('pinterest.com' in current_url_lower)
+                            )
+                            
+                            # Проверка содержимого страницы
+                            has_auth_indicators = (
+                                'create' in page_source or 
+                                'saved' in page_source or 
+                                'profile' in page_source or
+                                'follow' in page_source or
+                                'boards' in page_source or
+                                'pins' in page_source
+                            )
+                            
+                            # Проверка отсутствия формы логина
+                            no_login_form = (
+                                'log in' not in page_source and 
+                                'войти' not in page_source and 
+                                'sign up' not in page_source and
+                                'signup' not in current_url_lower
+                            )
+                            
+                            is_authorized = (is_profile_url or has_auth_indicators) and no_login_form
+                            
+                            if is_authorized:
                                 print("\n✓ Обнаружен успешный вход!")
-                                time.sleep(1)  # Минимальная задержка
+                                print(f"   URL: {current_url}")
+                                time.sleep(2)  # Даем время для полной загрузки страницы
                                 
                                 # Сохраняем cookies (быстро)
                                 try:
@@ -391,12 +574,66 @@ class PinterestSeleniumParser:
                                             cookies_file = self.cookies_file or "pinterest_cookies.json"
                                         from cookies_manager import CookiesManager
                                         CookiesManager.save_to_json(cookies_dict, cookies_file)
-                                        print(f"✓ Сессия сохранена: {len(cookies_dict)} cookies")
+                                        print(f"✓ Сессия сохранена: {len(cookies_dict)} cookies в {cookies_file}")
                                 except Exception as e:
                                     print(f"⚠ Ошибка при сохранении cookies: {e}")
                                 
+                                # Закрываем браузер после сохранения cookies
+                                print("✓ Закрываю браузер...")
+                                try:
+                                    self.driver.quit()
+                                    print("✓ Браузер закрыт")
+                                except Exception as e:
+                                    print(f"⚠ Ошибка при закрытии браузера: {e}")
+                                
+                                # Если был headless режим, перезапускаем в headless
+                                if was_headless:
+                                    print("🔄 Перезапускаю браузер в headless режиме...")
+                                    self.headless = True
+                                    self._setup_driver()
+                                    # Загружаем сохраненные cookies в новый браузер
+                                    if cookies_dict:
+                                        print("  Загружаю сохраненные cookies...")
+                                        self.driver.get("https://www.pinterest.com")
+                                        time.sleep(2)
+                                        for name, value in cookies_dict.items():
+                                            try:
+                                                self.driver.add_cookie({
+                                                    'name': name,
+                                                    'value': value,
+                                                    'domain': '.pinterest.com',
+                                                    'path': '/'
+                                                })
+                                            except:
+                                                pass
+                                        self.driver.refresh()
+                                        time.sleep(2)
+                                        print("✓ Cookies загружены в headless браузер")
+                                else:
+                                    # Если не был headless, просто создаем новый драйвер для дальнейшей работы
+                                    print("🔄 Перезапускаю браузер для работы...")
+                                    self._setup_driver()
+                                    # Загружаем сохраненные cookies
+                                    if cookies_dict:
+                                        print("  Загружаю сохраненные cookies...")
+                                        self.driver.get("https://www.pinterest.com")
+                                        time.sleep(2)
+                                        for name, value in cookies_dict.items():
+                                            try:
+                                                self.driver.add_cookie({
+                                                    'name': name,
+                                                    'value': value,
+                                                    'domain': '.pinterest.com',
+                                                    'path': '/'
+                                                })
+                                            except:
+                                                pass
+                                        self.driver.refresh()
+                                        time.sleep(2)
+                                        print("✓ Cookies загружены")
+                                
                                 print("=" * 80 + "\n")
-                                return
+                                return True
                         except Exception as e:
                             # Если не удалось проверить, продолжаем ожидание
                             print(f"⚠ Ошибка при проверке авторизации: {e}")
@@ -418,16 +655,25 @@ class PinterestSeleniumParser:
             print("\n⚠ Время ожидания истекло")
             print("=" * 80 + "\n")
             
+            # Закрываем браузер если авторизация не удалась
+            try:
+                self.driver.quit()
+                print("✓ Браузер закрыт")
+            except:
+                pass
+            
             # Возвращаем headless режим если был
             if was_headless:
-                self.driver.quit()
                 self.headless = True
                 self._setup_driver()
+            
+            return False
         except Exception as e:
             print(f"\n⚠ Ошибка при проверке авторизации: {e}")
             import traceback
             traceback.print_exc()
             print("=" * 80 + "\n")
+            return False
     
     def _create_images_directory(self):
         """Создает папку с рандомным названием для сохранения изображений"""
@@ -605,12 +851,43 @@ class PinterestSeleniumParser:
             print("  ⚠ Страница загружается, продолжаем...")
             time.sleep(2)  # Минимальная задержка вместо долгого ожидания
         
-        # Прокручиваем страницу для загрузки контента
-        print("Прокрутка страницы для загрузки контента...")
-        for i in range(scroll_times):
+        # Динамическая прокрутка до получения нужного количества пинов
+        print(f"Прокрутка страницы для загрузки контента (цель: {max_pins} пинов)...")
+        max_scrolls = max(scroll_times * 2, 10)  # Увеличиваем максимальное количество прокруток
+        pins_found = 0
+        last_pins_count = 0
+        no_progress_count = 0
+        
+        for i in range(max_scrolls):
+            # Прокручиваем страницу
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(2)
-            print(f"  Прокрутка {i+1}/{scroll_times}")
+            
+            # Проверяем количество найденных пинов
+            try:
+                pin_elements = self.driver.find_elements(By.CSS_SELECTOR, 'a[href*="/pin/"]')
+                pins_found = len(set([elem.get_attribute('href') for elem in pin_elements if elem.get_attribute('href')]))
+                
+                print(f"  Прокрутка {i+1}/{max_scrolls}: найдено {pins_found} уникальных пинов")
+                
+                # Если нашли достаточно пинов, останавливаемся
+                if pins_found >= max_pins:
+                    print(f"  ✓ Найдено достаточно пинов ({pins_found} >= {max_pins})")
+                    break
+                
+                # Проверяем, есть ли прогресс
+                if pins_found == last_pins_count:
+                    no_progress_count += 1
+                    if no_progress_count >= 3:  # Если 3 прокрутки подряд без прогресса, останавливаемся
+                        print(f"  ⚠ Нет прогресса после {no_progress_count} прокруток, останавливаемся")
+                        break
+                else:
+                    no_progress_count = 0
+                    last_pins_count = pins_found
+                    
+            except Exception as e:
+                print(f"  ⚠ Ошибка при проверке количества пинов: {e}")
+                time.sleep(1)
         
         # Получаем HTML после загрузки JavaScript
         html = self.driver.page_source
@@ -1772,9 +2049,14 @@ if __name__ == "__main__":
                     print(f"   Изображение: {pin.get('image_url', '')[:80]}...")
             
             # Сохраняем в CSV
-            csv_parser = PinterestParser()
+            import csv
             filename = f"pinterest_pins_{query.replace(' ', '_').replace('/', '_')[:50]}.csv"
-            csv_parser.save_to_csv(pins, filename)
+            if pins:
+                fieldnames = ['title', 'description', 'pin_link', 'image_url', 'author', 'board_name', 'board_url']
+                with open(filename, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+                    writer.writeheader()
+                    writer.writerows(pins)
             print(f"\n✓ Данные сохранены в файл: {filename}")
         else:
             print("\n⚠ Пины не найдены. Попробуйте:")

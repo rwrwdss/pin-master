@@ -14,6 +14,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.keys import Keys
 from webdriver_manager.chrome import ChromeDriverManager
+from chromedriver_helper import get_chromedriver_path
 
 from pinterest_selectors import PinterestConfig
 from cookies_manager import load_cookies_from_file
@@ -46,11 +47,11 @@ class PinterestPublisher:
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--disable-blink-features=AutomationControlled')
         chrome_options.add_argument(f'user-agent={PinterestConfig.USER_AGENT}')
-        chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--window-size=1200,1080')
         chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
         
         try:
-            service = Service(ChromeDriverManager().install())
+            service = Service(get_chromedriver_path())
             self.driver = webdriver.Chrome(service=service, options=chrome_options)
             print("✓ Chrome драйвер запущен для публикации")
             
