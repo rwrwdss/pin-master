@@ -18,11 +18,11 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.keys import Keys
-from chromedriver_helper import get_chromedriver_path
+from pinmaster.browser.chromedriver import get_chromedriver_path
 
-from pinterest_selectors import PinterestConfig, PinCreationSelectors as PCS
-from cookies_manager import load_cookies_from_file
-from pinterest_selenium_parser import PinterestSeleniumParser
+from pinmaster.pinterest.selectors import PinterestConfig, PinCreationSelectors as PCS
+from pinmaster.pinterest.cookies import load_cookies_from_file
+from pinmaster.pinterest.selenium_parser import PinterestSeleniumParser
 
 
 def _cookies_to_playwright(cookies: dict) -> list:

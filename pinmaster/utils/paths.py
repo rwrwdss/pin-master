@@ -50,16 +50,13 @@ def is_frozen() -> bool:
 
 def get_base_dir() -> Path:
     """
-    Возвращает базовую директорию приложения.
-    Для frozen приложения - директория с исполняемым файлом.
-    Для разработки - директория со скриптом.
+    Базовая директория приложения (корень проекта).
+    Frozen: директория с исполняемым файлом.
+    Разработка: корень проекта (родитель пакета pinmaster).
     """
     if is_frozen():
-        # PyInstaller: директория с исполняемым файлом (.app/Contents/MacOS)
         return Path(sys.executable).parent
-    else:
-        # В режиме разработки - директория со скриптом
-        return Path(__file__).parent
+    return Path(__file__).resolve().parent.parent.parent
 
 
 def get_meipass_dir() -> Path:

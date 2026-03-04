@@ -20,12 +20,12 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import StaleElementReferenceException
 from webdriver_manager.chrome import ChromeDriverManager
-from chromedriver_helper import get_chromedriver_path
+from pinmaster.browser.chromedriver import get_chromedriver_path
 from bs4 import BeautifulSoup
 
-from pinterest_selectors import PinterestSelectors, PinterestURLs, PinterestConfig
-from cookies_manager import load_cookies_from_file, CookiesManager
-from pinterest_auth import PinterestAuth
+from pinmaster.pinterest.selectors import PinterestSelectors, PinterestURLs, PinterestConfig
+from pinmaster.pinterest.cookies import load_cookies_from_file, CookiesManager
+from pinmaster.pinterest.auth import PinterestAuth
 
 try:
     from path_utils import get_cookies_path, get_images_dir

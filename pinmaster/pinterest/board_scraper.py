@@ -15,7 +15,7 @@ from pathlib import Path
 from urllib.parse import unquote
 from typing import Dict, List, Optional, Tuple
 
-from path_utils import get_app_data_dir, is_frozen
+from pinmaster.utils.paths import get_app_data_dir, is_frozen
 
 logger = logging.getLogger("PinMaster")
 

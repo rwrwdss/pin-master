@@ -11,8 +11,8 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
-from pinterest_selectors import PinterestSelectors, PinterestURLs, PinterestConfig
-from cookies_manager import CookiesManager, load_cookies_from_file
+from pinmaster.pinterest.selectors import PinterestSelectors, PinterestURLs, PinterestConfig
+from pinmaster.pinterest.cookies import CookiesManager, load_cookies_from_file
 
 
 class PinterestParser:

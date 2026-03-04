@@ -1,25 +1,30 @@
 """
 Менеджер кэширования данных о пинах и досках пользователя.
-Сохраняет данные в локальные JSON файлы для быстрого доступа.
 """
 
 import json
 import os
+from pathlib import Path
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
+
+
+def _cache_dir() -> Path:
+    from pinmaster.utils.paths import is_frozen, get_base_dir, get_app_data_dir
+    if is_frozen():
+        return get_app_data_dir() / "cache"
+    return get_base_dir() / "cache"
 
 
 class CacheManager:
     """Управление кэшем данных Pinterest"""
     
-    CACHE_DIR = "cache"
-    CACHE_EXPIRY_DAYS = 7  # Кэш действителен 7 дней
+    CACHE_EXPIRY_DAYS = 7
     
     @staticmethod
     def _ensure_cache_dir():
-        """Создает директорию для кэша если её нет"""
-        if not os.path.exists(CacheManager.CACHE_DIR):
-            os.makedirs(CacheManager.CACHE_DIR)
+        d = _cache_dir()
+        d.mkdir(parents=True, exist_ok=True)
     
     @staticmethod
     def _get_cache_file(username: str, cache_type: str) -> str:
@@ -31,7 +36,7 @@ class CacheManager:
             cache_type: Тип кэша ('pins' или 'boards')
         """
         CacheManager._ensure_cache_dir()
-        return os.path.join(CacheManager.CACHE_DIR, f"{username}_{cache_type}.json")
+        return str(_cache_dir() / f"{username}_{cache_type}.json")
     
     @staticmethod
     def _is_cache_valid(cache_data: Dict) -> bool:
@@ -198,11 +203,9 @@ class CacheManager:
                         os.remove(cache_file)
                         print(f"✓ Кэш удален: {cache_file}")
             else:
-                # Очищаем весь кэш
-                for filename in os.listdir(CacheManager.CACHE_DIR):
-                    if filename.endswith('.json'):
-                        filepath = os.path.join(CacheManager.CACHE_DIR, filename)
-                        os.remove(filepath)
-                        print(f"✓ Кэш удален: {filepath}")
+                d = _cache_dir()
+                for f in d.glob("*.json"):
+                    f.unlink()
+                    print(f"✓ Кэш удален: {f}")
         except Exception as e:
             print(f"⚠ Ошибка при очистке кэша: {e}")

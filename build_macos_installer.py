@@ -28,7 +28,7 @@ VERSION = "1.0.0"
 BUILD = "20250204"
 ICON_FILE = BASE_DIR / "icon.icns"
 STYLES_FILE = BASE_DIR / "styles.qss"
-MAIN_SCRIPT = BASE_DIR / "qt_main_window.py"
+MAIN_SCRIPT = BASE_DIR / "main.py"
 BUILD_DIR = BASE_DIR / "build"
 DIST_DIR = BASE_DIR / "dist"
 SPEC_FILE = BASE_DIR / f"{APP_NAME}.spec"
@@ -213,7 +213,7 @@ block_cipher = None
 
 a = Analysis(
     ['{MAIN_SCRIPT.name}'],
-    pathex=[],
+    pathex=[r'{BASE_DIR}'],
     binaries=[
         {binaries_str}
     ],
@@ -240,8 +240,6 @@ a = Analysis(
         'webdriver_manager.core.driver_cache',
         'webdriver_manager.core.os_manager',
         'webdriver_manager.core.utils',
-        'webdriver_frozen_patch',
-        'chromedriver_helper',
         'requests',
         'beautifulsoup4',
         'bs4',
@@ -257,17 +255,27 @@ a = Analysis(
         'time',
         'os',
         'sys',
-        # Локальные модули (обязательно для прод, иначе возможны ImportError в .app)
-        'cache_manager',
-        'cookies_manager',
-        'path_utils',
-        'pinterest_publisher',
-        'pinterest_selenium_parser',
-        'pinterest_selectors',
-        'status_indicator',
-        'toast_notification',
-        'board_scraper',
-        'pinterest_auth',
+        # Пакет pinmaster
+        'pinmaster',
+        'pinmaster.browser',
+        'pinmaster.browser.chromedriver',
+        'pinmaster.browser.webdriver_patch',
+        'pinmaster.utils',
+        'pinmaster.utils.paths',
+        'pinmaster.utils.cache',
+        'pinmaster.pinterest',
+        'pinmaster.pinterest.selectors',
+        'pinmaster.pinterest.cookies',
+        'pinmaster.pinterest.auth',
+        'pinmaster.pinterest.parser',
+        'pinmaster.pinterest.selenium_parser',
+        'pinmaster.pinterest.publisher',
+        'pinmaster.pinterest.board_scraper',
+        'pinmaster.gui',
+        'pinmaster.gui.main_window',
+        'pinmaster.gui.status_indicator',
+        'pinmaster.gui.toast_notification',
+        'pinmaster.gui.embedded_styles',
         # Playwright
         'playwright',
         'playwright.sync_api',

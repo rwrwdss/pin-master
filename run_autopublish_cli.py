@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR))
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,7 +32,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AutoPublishCLI")
 
-from path_utils import (
+from pinmaster.utils.paths import (
     get_accounts_dir,
     get_config_path,
     get_cookies_path,
@@ -86,7 +87,7 @@ def run_autopublish_playwright(
         if aid in _context_pool:
             return _context_pool[aid]
         try:
-            import board_scraper
+            import pinmaster.pinterest.board_scraper as board_scraper
             board_scraper._configure_playwright_browsers_path()
         except Exception:
             pass
@@ -111,8 +112,8 @@ def run_autopublish_playwright(
 
     try:
         from playwright.sync_api import sync_playwright
-        from cookies_manager import load_cookies_from_file
-        from pinterest_publisher import create_pin_playwright, _cookies_to_playwright
+        from pinmaster.pinterest.cookies import load_cookies_from_file
+        from pinmaster.pinterest.publisher import create_pin_playwright, _cookies_to_playwright
     except ImportError as e:
         log(f"✗ Playwright не установлен: {e}")
         return 0, max_posts

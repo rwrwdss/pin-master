@@ -8,8 +8,8 @@ import sys
 import argparse
 import requests
 from bs4 import BeautifulSoup
-from pinterest_selectors import PinterestConfig
-from cookies_manager import load_cookies_from_file, CookiesManager
+from pinmaster.pinterest.selectors import PinterestConfig
+from pinmaster.pinterest.cookies import load_cookies_from_file, CookiesManager
 
 
 def analyze_pinterest_page(url: str, cookies_file: str = None):

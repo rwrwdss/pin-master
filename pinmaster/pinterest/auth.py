@@ -15,10 +15,10 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
-from chromedriver_helper import get_chromedriver_path
+from pinmaster.browser.chromedriver import get_chromedriver_path
 
-from pinterest_selectors import PinterestConfig
-from cookies_manager import CookiesManager
+from pinmaster.pinterest.selectors import PinterestConfig
+from pinmaster.pinterest.cookies import CookiesManager
 
 
 class PinterestAuth:
