@@ -1,8 +1,7 @@
 #!/bin/bash
-# Скрипт для проверки статуса сборки (dist — относительно директории скрипта)
+# Скрипт для проверки статуса сборки
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DIST_DIR="${SCRIPT_DIR}/dist"
+DIST_DIR="/Users/bulatmuhametzanov/Desktop/пинтерест/dist"
 
 echo "Проверка результатов сборки..."
 echo ""

@@ -1,20 +1,11 @@
 {
-  "2026-02-16": [
+  "2026-01-27": [
     {
-      "query": "Drake",
-      "pins_count": 500,
-      "csv_path": "/Users/amirfatyhov/Documents/PinMaster/csv/2026-02-16/pinterest_Drake_17-26-28.csv",
-      "timestamp": "2026-02-16T17:26:28.654551",
-      "time": "17:26:28",
-      "unique": false
-    },
-    {
-      "query": "KFC",
-      "pins_count": 500,
-      "csv_path": "/Users/amirfatyhov/Documents/PinMaster/csv/2026-02-16/pinterest_KFC_18-08-53.csv",
-      "timestamp": "2026-02-16T18:08:53.757305",
-      "time": "18:08:53",
-      "unique": false
+      "query": "котик",
+      "pins_count": 5,
+      "csv_path": "/Users/bulatmuhametzanov/Documents/PinMaster/csv/2026-01-27/pinterest_pins_котик_17-23-31.csv",
+      "timestamp": "2026-01-27T17:23:31.630660",
+      "time": "17:23:31"
     }
   ]
 }
