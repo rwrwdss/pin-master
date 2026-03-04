@@ -568,7 +568,53 @@ class PinterestSeleniumParser:
                                            img.get_attribute('data-src') or 
                                            img.get_attribute('data-lazy-src'))
                                 
-                                # Проверяем, не GIF ли это
+                                # Фильтруем аватары и служебные изображения
+                                if image_url:
+                                    img_src_lower = image_url.lower()
+                                    
+                                    # Исключаем аватары и служебные изображения
+                                    exclude_patterns = [
+                                        '/users/', '/user/', '/avatars/', '/avatar/',
+                                        '/profiles/', '/profile/', '/account/',
+                                        'avatar', 'profile-pic', 'user-pic',
+                                        '/50x50/', '/100x100/', '/75x75/', '/60x60/',
+                                        '/32x32/', '/40x40/', '/24x24/',
+                                        'logo', 'icon', 'badge', 'button'
+                                    ]
+                                    
+                                    # Проверяем размеры изображения (аватары обычно маленькие)
+                                    try:
+                                        width = img.get_attribute('width')
+                                        height = img.get_attribute('height')
+                                        if width and height:
+                                            try:
+                                                w, h = int(width), int(height)
+                                                # Аватары обычно меньше 150x150
+                                                if w < 150 and h < 150:
+                                                    image_url = ''  # Пропускаем маленькие изображения
+                                            except:
+                                                pass
+                                    except:
+                                        pass
+                                    
+                                    # Проверяем URL на наличие паттернов аватаров
+                                    if any(pattern in img_src_lower for pattern in exclude_patterns):
+                                        image_url = ''  # Пропускаем аватары
+                                    
+                                    # Проверяем классы элемента (аватары часто имеют специфические классы)
+                                    if image_url:
+                                        try:
+                                            img_classes = img.get_attribute('class') or ''
+                                            parent_classes = parent.get_attribute('class') or ''
+                                            all_classes = (img_classes + ' ' + parent_classes).lower()
+                                            
+                                            avatar_keywords = ['avatar', 'profile', 'user-pic', 'userpic', 'headshot']
+                                            if any(keyword in all_classes for keyword in avatar_keywords):
+                                                image_url = ''  # Пропускаем аватары
+                                        except:
+                                            pass
+                                
+                                # Проверяем, не GIF ли это (только если это не аватар)
                                 if image_url:
                                     # Проверяем по URL или атрибутам
                                     img_src_lower = image_url.lower()
@@ -596,7 +642,11 @@ class PinterestSeleniumParser:
                                         import re
                                         match = re.search(r'url\(["\']?([^"\']+)["\']?\)', style)
                                         if match:
-                                            image_url = match.group(1)
+                                            bg_url = match.group(1)
+                                            # Проверяем, не аватар ли это
+                                            bg_url_lower = bg_url.lower()
+                                            if not any(pattern in bg_url_lower for pattern in exclude_patterns):
+                                                image_url = bg_url
                             except:
                                 pass
                         
@@ -896,10 +946,40 @@ class PinterestSeleniumParser:
                 
                 # Если видео не найдено, ищем изображение
                 if not pin_data['image_url']:
+                    # Паттерны для исключения аватаров
+                    exclude_patterns = [
+                        '/users/', '/user/', '/avatars/', '/avatar/',
+                        '/profiles/', '/profile/', '/account/',
+                        'avatar', 'profile-pic', 'user-pic',
+                        '/50x50/', '/100x100/', '/75x75/', '/60x60/',
+                        '/32x32/', '/40x40/', '/24x24/',
+                        'logo', 'icon', 'badge', 'button'
+                    ]
+                    
                     img_elements = self.driver.find_elements(By.CSS_SELECTOR, 'img[src*="pinimg.com"]')
                     for img in img_elements:
                         src = img.get_attribute('src') or img.get_attribute('data-src')
                         if src and 'pinimg.com' in src:
+                            src_lower = src.lower()
+                            
+                            # Пропускаем аватары и служебные изображения
+                            if any(pattern in src_lower for pattern in exclude_patterns):
+                                continue
+                            
+                            # Проверяем размеры (аватары обычно маленькие)
+                            try:
+                                width = img.get_attribute('width')
+                                height = img.get_attribute('height')
+                                if width and height:
+                                    try:
+                                        w, h = int(width), int(height)
+                                        if w < 150 and h < 150:
+                                            continue  # Пропускаем маленькие изображения
+                                    except:
+                                        pass
+                            except:
+                                pass
+                            
                             # Преобразуем в оригинал (полный размер)
                             if '/736x/' in src:
                                 src = src.replace('/736x/', '/originals/')
@@ -907,6 +987,7 @@ class PinterestSeleniumParser:
                                 src = src.replace('/564x/', '/originals/')
                             elif '/236x/' in src:
                                 src = src.replace('/236x/', '/originals/')
+                            
                             pin_data['image_url'] = src
                             
                             # Проверяем, не GIF ли это
@@ -1131,6 +1212,37 @@ class PinterestSeleniumParser:
                                     try:
                                         img = parent.find_element(By.TAG_NAME, 'img')
                                         image_url = img.get_attribute('src') or img.get_attribute('data-src')
+                                        
+                                        # Фильтруем аватары
+                                        if image_url:
+                                            img_src_lower = image_url.lower()
+                                            exclude_patterns = [
+                                                '/users/', '/user/', '/avatars/', '/avatar/',
+                                                '/profiles/', '/profile/', '/account/',
+                                                'avatar', 'profile-pic', 'user-pic',
+                                                '/50x50/', '/100x100/', '/75x75/', '/60x60/',
+                                                '/32x32/', '/40x40/', '/24x24/',
+                                                'logo', 'icon', 'badge', 'button'
+                                            ]
+                                            
+                                            # Пропускаем аватары
+                                            if any(pattern in img_src_lower for pattern in exclude_patterns):
+                                                image_url = ''
+                                            
+                                            # Проверяем размеры
+                                            if image_url:
+                                                try:
+                                                    width = img.get_attribute('width')
+                                                    height = img.get_attribute('height')
+                                                    if width and height:
+                                                        try:
+                                                            w, h = int(width), int(height)
+                                                            if w < 150 and h < 150:
+                                                                image_url = ''  # Пропускаем маленькие изображения
+                                                        except:
+                                                            pass
+                                                except:
+                                                    pass
                                         
                                         # Проверяем на GIF
                                         if image_url and ('.gif' in image_url.lower() or 

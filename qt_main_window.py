@@ -14,6 +14,7 @@ from typing import Optional, Dict
 import json
 
 from pinterest_selenium_parser import PinterestSeleniumParser
+from cache_manager import CacheManager
 
 
 class AccountInfoWidget(QGroupBox):
@@ -107,9 +108,20 @@ class AccountInfoThread(QThread):
                 self.error_occurred.emit("Не удалось определить имя пользователя")
                 return
             
-            # Парсим доски пользователя
+            # Парсим доски пользователя (с проверкой кэша)
             try:
-                boards = self.parser.parse_user_boards(username=username)
+                # Сначала проверяем кэш
+                boards = CacheManager.load_boards(username)
+                if boards is None:
+                    # Кэша нет или он устарел - парсим заново
+                    print(f"Кэш досок для {username} не найден или устарел, парсим...")
+                    boards = self.parser.parse_user_boards(username=username)
+                    if boards:
+                        # Сохраняем в кэш
+                        CacheManager.save_boards(username, boards)
+                else:
+                    print(f"Используем кэш досок для {username}")
+                
                 if boards:
                     account_info['boards_count'] = f"{len(boards)} досок"
                     account_info['boards'] = boards
@@ -121,9 +133,22 @@ class AccountInfoThread(QThread):
                 account_info['boards_count'] = "Ошибка"
                 account_info['boards'] = []
             
-            # Парсим пины пользователя (ограничиваем до 10 для быстрой загрузки)
+            # Парсим пины пользователя (ограничиваем до 10 для быстрой загрузки, с проверкой кэша)
             try:
-                pins = self.parser.parse_user_pins(username=username, max_pins=10)
+                # Сначала проверяем кэш
+                pins = CacheManager.load_pins(username)
+                if pins is None:
+                    # Кэша нет или он устарел - парсим заново
+                    print(f"Кэш пинов для {username} не найден или устарел, парсим...")
+                    pins = self.parser.parse_user_pins(username=username, max_pins=10)
+                    if pins:
+                        # Сохраняем в кэш
+                        CacheManager.save_pins(username, pins)
+                else:
+                    print(f"Используем кэш пинов для {username}")
+                    # Ограничиваем до 10 для отображения
+                    pins = pins[:10]
+                
                 if pins:
                     account_info['pins_count'] = f"{len(pins)} пинов (показано 10)"
                     account_info['pins'] = pins
@@ -177,6 +202,41 @@ class ParserInitThread(QThread):
             traceback.print_exc()
 
 
+class SearchParseThread(QThread):
+    """Поток для парсинга поиска Pinterest"""
+    
+    parse_progress = pyqtSignal(str)  # Прогресс парсинга
+    parse_completed = pyqtSignal(list)  # Результаты парсинга
+    parse_error = pyqtSignal(str)  # Ошибка парсинга
+    
+    def __init__(self, parser: PinterestSeleniumParser, query: str, max_pins: int = 10):
+        super().__init__()
+        self.parser = parser
+        self.query = query
+        self.max_pins = max_pins
+    
+    def run(self):
+        """Выполняет парсинг поиска"""
+        try:
+            self.parse_progress.emit(f"Начинаем парсинг: {self.query}")
+            
+            # Парсим результаты поиска
+            pins = self.parser.parse_search_page(self.query, max_pins=self.max_pins)
+            
+            if pins:
+                self.parse_progress.emit(f"Найдено пинов: {len(pins)}")
+                self.parse_completed.emit(pins)
+            else:
+                self.parse_error.emit("Пины не найдены")
+                
+        except Exception as e:
+            error_msg = f"Ошибка при парсинге: {str(e)}"
+            print(error_msg)
+            import traceback
+            traceback.print_exc()
+            self.parse_error.emit(error_msg)
+
+
 class PinterestMainWindow(QMainWindow):
     """Главное окно приложения"""
     
@@ -184,6 +244,7 @@ class PinterestMainWindow(QMainWindow):
         super().__init__()
         self.parser: Optional[PinterestSeleniumParser] = None
         self.account_info_thread: Optional[AccountInfoThread] = None
+        self.search_parse_thread: Optional[SearchParseThread] = None
         self.setup_ui()
         self.load_config()
     
@@ -372,8 +433,70 @@ class PinterestMainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Введите тематику для поиска")
             return
         
+        if not self.parser:
+            QMessageBox.warning(self, "Ошибка", "Парсер не инициализирован. Дождитесь завершения авторизации.")
+            return
+        
+        # Очищаем результаты
+        self.results_text.clear()
         self.results_text.append(f"Начинаем парсинг: {query}")
-        # TODO: Реализовать парсинг в отдельном потоке
+        
+        # Блокируем кнопку на время парсинга
+        self.search_btn.setEnabled(False)
+        self.statusBar().showMessage("Парсинг в процессе...")
+        
+        # Запускаем парсинг в отдельном потоке
+        self.search_parse_thread = SearchParseThread(self.parser, query, max_pins=20)
+        self.search_parse_thread.parse_progress.connect(self.on_parse_progress)
+        self.search_parse_thread.parse_completed.connect(self.on_parse_completed)
+        self.search_parse_thread.parse_error.connect(self.on_parse_error)
+        self.search_parse_thread.start()
+    
+    def on_parse_progress(self, message: str):
+        """Обработчик прогресса парсинга"""
+        self.results_text.append(message)
+        self.statusBar().showMessage(message)
+    
+    def on_parse_completed(self, pins: list):
+        """Обработчик завершения парсинга"""
+        self.results_text.append("\n" + "=" * 80)
+        self.results_text.append("РЕЗУЛЬТАТЫ ПАРСИНГА")
+        self.results_text.append("=" * 80)
+        self.results_text.append(f"Найдено пинов: {len(pins)}\n")
+        
+        for i, pin in enumerate(pins, 1):
+            title = pin.get('title', 'Без названия') or 'Без названия'
+            author = pin.get('author', 'Неизвестно') or 'Неизвестно'
+            media_type = pin.get('media_type', 'image')
+            pin_link = pin.get('pin_link', '')
+            
+            self.results_text.append(f"{i}. {title}")
+            self.results_text.append(f"   Автор: {author}")
+            self.results_text.append(f"   Тип: {media_type}")
+            if pin_link:
+                self.results_text.append(f"   Ссылка: {pin_link[:80]}...")
+            self.results_text.append("")
+        
+        # Сохраняем в CSV
+        try:
+            from pinterest_parser import PinterestParser
+            csv_parser = PinterestParser()
+            filename = f"pinterest_pins_{self.search_input.text().strip().replace(' ', '_').replace('/', '_')[:50]}.csv"
+            csv_parser.save_to_csv(pins, filename)
+            self.results_text.append(f"\n✓ Данные сохранены в файл: {filename}")
+            self.statusBar().showMessage(f"Парсинг завершен. Сохранено в {filename}")
+        except Exception as e:
+            self.results_text.append(f"\n⚠ Ошибка при сохранении CSV: {e}")
+            self.statusBar().showMessage(f"Парсинг завершен, но ошибка при сохранении: {e}")
+        
+        self.search_btn.setEnabled(True)
+    
+    def on_parse_error(self, error: str):
+        """Обработчик ошибки парсинга"""
+        self.results_text.append(f"\n⚠ Ошибка: {error}")
+        self.statusBar().showMessage(f"Ошибка: {error}")
+        self.search_btn.setEnabled(True)
+        QMessageBox.warning(self, "Ошибка парсинга", error)
     
     def on_logout(self):
         """Обработчик выхода из аккаунта"""
