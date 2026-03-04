@@ -51,6 +51,7 @@ icon.iconset/
 
 # Локальные данные и логи
 accounts/
+parsing_history.json
 *.log
 publish_*.log
 publish_page_report.txt
