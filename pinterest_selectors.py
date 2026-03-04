@@ -57,3 +57,8 @@ class PinterestConfig:
     
     # Путь к файлу с cookies по умолчанию
     DEFAULT_COOKIES_FILE = "pinterest_cookies.json"
+
+
+class PinCreationSelectors:
+    """Селекторы и URL для страницы создания пина (Playwright / Selenium)."""
+    PAGE_URL = "https://ru.pinterest.com/pin-creation-tool/"

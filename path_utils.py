@@ -79,14 +79,45 @@ def get_config_path() -> Path:
         return get_base_dir() / "config.json"
 
 
-def get_cookies_path() -> Path:
-    """Возвращает путь к файлу cookies"""
+def get_accounts_dir() -> Path:
+    """Директория для хранения cookies по аккаунтам (accounts/)."""
     if is_frozen():
-        # В продакшене cookies в AppData
-        return get_app_data_dir() / "pinterest_cookies.json"
+        acc_dir = get_app_data_dir() / "accounts"
     else:
-        # В разработке - рядом со скриптом
+        acc_dir = get_base_dir() / "accounts"
+    acc_dir.mkdir(parents=True, exist_ok=True)
+    return acc_dir
+
+
+def get_playwright_profiles_dir() -> Path:
+    """Директория для постоянных Chrome-профилей Playwright (profiles/)."""
+    profiles_dir = get_app_data_dir() / "profiles"
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    return profiles_dir
+
+
+def get_playwright_profile_dir(account_id: str) -> Path:
+    """
+    Путь к профилю Playwright для аккаунта (profiles/pw_profile_{account_id}).
+    До 10 аккаунтов: account_id "1".."10".
+    """
+    if not account_id or not str(account_id).strip():
+        account_id = "default"
+    safe_id = str(account_id).strip().replace(os.path.sep, "_").replace("..", "_")[:32]
+    return get_playwright_profiles_dir() / f"pw_profile_{safe_id}"
+
+
+def get_cookies_path(account_id: Optional[str] = None) -> Path:
+    """
+    Путь к файлу cookies.
+    account_id=None — основной файл pinterest_cookies.json.
+    account_id="1", "2" и т.д. — accounts/account_1_cookies.json (до 10 аккаунтов).
+    """
+    if not account_id:
+        if is_frozen():
+            return get_app_data_dir() / "pinterest_cookies.json"
         return get_base_dir() / "pinterest_cookies.json"
+    return get_accounts_dir() / f"account_{account_id}_cookies.json"
 
 
 def get_images_dir() -> Path:
@@ -114,6 +145,25 @@ def get_csv_dir(date: Optional[str] = None) -> Path:
     
     csv_dir.mkdir(parents=True, exist_ok=True)
     return csv_dir
+
+
+def get_results_csv_path() -> Path:
+    """Один рабочий CSV файл с результатами парсинга (для обратной совместимости)."""
+    base_csv_dir = get_user_data_dir() / "csv"
+    base_csv_dir.mkdir(parents=True, exist_ok=True)
+    return base_csv_dir / "pinterest_results.csv"
+
+
+def get_unique_results_csv_path(query: str) -> Path:
+    """Уникальный путь к CSV для нового парсинга: каждый результат в своём файле (дата + время + запрос)."""
+    from datetime import datetime
+    now = datetime.now()
+    date_str = now.strftime("%Y-%m-%d")
+    time_str = now.strftime("%H-%M-%S")
+    safe = "".join(c if c.isalnum() or c in " -_" else "_" for c in (query or "parse")[:50]).strip() or "parse"
+    safe = safe.replace(" ", "_")[:40]
+    csv_dir = get_csv_dir(date_str)
+    return csv_dir / f"pinterest_{safe}_{time_str}.csv"
 
 
 def get_parsing_history_path() -> Path:

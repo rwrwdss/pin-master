@@ -18,12 +18,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from selenium.common.exceptions import StaleElementReferenceException
 from webdriver_manager.chrome import ChromeDriverManager
 from chromedriver_helper import get_chromedriver_path
 from bs4 import BeautifulSoup
 
 from pinterest_selectors import PinterestSelectors, PinterestURLs, PinterestConfig
-from cookies_manager import load_cookies_from_file
+from cookies_manager import load_cookies_from_file, CookiesManager
 from pinterest_auth import PinterestAuth
 
 try:
@@ -151,6 +152,18 @@ class PinterestSeleniumParser:
                     print(f"  ⚠ Ошибка при закрытии процессов Chrome: {e}")
         except Exception as e:
             print(f"  ⚠ Ошибка при закрытии старых браузеров: {e}")
+    
+    def close_browser(self):
+        """Закрывает только окно браузера парсера (cookies уже сохранены)."""
+        try:
+            if self.driver:
+                try:
+                    self.driver.quit()
+                except Exception:
+                    pass
+                self.driver = None
+        except Exception:
+            pass
     
     def _setup_driver(self):
         """Настраивает и запускает Chrome драйвер"""
@@ -286,6 +299,15 @@ class PinterestSeleniumParser:
                 # Убеждаемся, что путь к драйверу абсолютный
                 driver_path = os.path.abspath(driver_path)
                 print(f"✓ Абсолютный путь к драйверу: {driver_path}")
+                # Подпись ad-hoc — без неё macOS может убивать процесс (SIGKILL -9)
+                try:
+                    subprocess.run(
+                        ['codesign', '--force', '--sign', '-', driver_path],
+                        stderr=subprocess.PIPE, stdout=subprocess.PIPE, timeout=10
+                    )
+                    print("✓ Chrome драйвер подписан (ad-hoc) для macOS")
+                except Exception:
+                    pass
             
             print("\n🚀 Запуск Chrome драйвера...")
             service = Service(driver_path)
@@ -746,6 +768,125 @@ class PinterestSeleniumParser:
             print(f"⚠ Ошибка при скачивании изображения {image_url}: {e}")
             return image_url  # Возвращаем оригинальный URL если не удалось скачать
     
+    def _get_pin_via_api(self, pin_id: str, pin_url: str) -> Optional[Dict[str, str]]:
+        """
+        Получает название и описание пина через внутренний API Pinterest (PinResource/get).
+        Параметры и заголовки как в DevTools → Network. При ошибке возвращает None.
+        """
+        try:
+            selenium_cookies = self.driver.get_cookies()
+            cookies_dict = {c['name']: c['value'] for c in selenium_cookies}
+            if not cookies_dict or '_pinterest_sess' not in cookies_dict:
+                file_cookies = load_cookies_from_file(self.cookies_file or "pinterest_cookies.json") if (self.cookies_file or os.path.exists("pinterest_cookies.json")) else {}
+                if file_cookies:
+                    cookies_dict = file_cookies
+            if not cookies_dict:
+                return None
+            
+            source_url = f"/pin/{pin_id}/"
+            api_url = "https://ru.pinterest.com/resource/PinResource/get/"
+            # data как в DevTools: options с add_fields, noCache, fetch_visual_search_objects, get_page_metadata
+            params = {
+                "source_url": source_url,
+                "data": json.dumps({
+                    "options": {
+                        "id": pin_id,
+                        "field_set_key": "auth_web_main_pin",
+                        "add_fields": "pin.gen_ai_topics",
+                        "noCache": True,
+                        "fetch_visual_search_objects": True,
+                        "get_page_metadata": False,
+                    },
+                    "context": {}
+                })
+            }
+            headers = {
+                "User-Agent": PinterestConfig.USER_AGENT,
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Referer": "https://ru.pinterest.com/",
+                "X-Requested-With": "XMLHttpRequest",
+                "X-Pinterest-AppState": "active",
+                "X-Pinterest-Source-Url": source_url,
+                "X-Pinterest-PWS-Handler": "www/pin/[id].js",
+                "X-App-Version": "53c3e54",
+            }
+            r = requests.get(api_url, params=params, headers=headers, cookies=cookies_dict, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+            res = data.get("resource_response") or {}
+            pin_data = res.get("data")
+            if not isinstance(pin_data, dict):
+                return None
+            
+            # Заголовок пина: title (как на странице пина)
+            title = (pin_data.get("title") or pin_data.get("grid_title") or pin_data.get("name") or "").strip()
+            # Описание: description или seo_alt_text (Pinterest иногда кладёт текст в seo_alt_text)
+            desc = (pin_data.get("description") or pin_data.get("seo_alt_text") or pin_data.get("description_html") or "").strip()
+            if desc and desc.startswith("<"):
+                try:
+                    desc = BeautifulSoup(desc, "html.parser").get_text(separator=" ", strip=True)
+                except Exception:
+                    pass
+            
+            image_url = ""
+            images = pin_data.get("images") or {}
+            if isinstance(images, dict):
+                orig = images.get("orig") or images.get("736x") or images.get("564x")
+                if isinstance(orig, dict) and orig.get("url"):
+                    image_url = orig["url"]
+            
+            # Аналитика из ответа API
+            repin_count = pin_data.get("repin_count")
+            if repin_count is None:
+                repin_count = ""
+            comments_disabled = pin_data.get("comments_disabled")
+            if comments_disabled is None:
+                comments_disabled = ""
+            else:
+                comments_disabled = "true" if comments_disabled else "false"
+            agg = pin_data.get("aggregated_pin_data") or {}
+            agg_stats = agg.get("aggregated_stats") or {} if isinstance(agg, dict) else {}
+            saves = agg_stats.get("saves") if isinstance(agg_stats, dict) else ""
+            done = agg_stats.get("done") if isinstance(agg_stats, dict) else ""
+            comment_count = agg.get("comment_count") if isinstance(agg, dict) else ""
+            reaction_counts = pin_data.get("reaction_counts") or {}
+            if isinstance(reaction_counts, dict):
+                try:
+                    likes = sum(int(v) for v in reaction_counts.values())
+                except (TypeError, ValueError):
+                    likes = ""
+            else:
+                likes = ""
+            created_at = (pin_data.get("created_at") or "").strip()
+            user_obj = pin_data.get("user") or pin_data.get("creator") or {}
+            share_count = user_obj.get("share_count") if isinstance(user_obj, dict) else ""
+            if share_count is None:
+                share_count = pin_data.get("share_count", "")
+            if share_count is None:
+                share_count = ""
+            
+            return {
+                "pin_link": pin_url,
+                "title": title,
+                "description": desc,
+                "image_url": image_url,
+                "media_type": pin_data.get("media", {}).get("type", "image") if isinstance(pin_data.get("media"), dict) else "image",
+                "author": (pin_data.get("creator", {}) or {}).get("username", "") if isinstance(pin_data.get("creator"), dict) else "",
+                "repin_count": repin_count,
+                "comments_disabled": comments_disabled,
+                "saves": saves,
+                "done": done,
+                "comment_count": comment_count,
+                "likes": likes,
+                "created_at": created_at,
+                "share_count": share_count,
+            }
+        except Exception as e:
+            return None
+    
     def _load_cookies(self):
         """Загружает cookies в браузер"""
         try:
@@ -806,6 +947,133 @@ class PinterestSeleniumParser:
             print(f"⚠ Ошибка при загрузке cookies: {e}")
             return False
     
+    def is_driver_alive(self) -> bool:
+        """Проверяет, что сессия драйвера ещё жива (браузер не закрыт)."""
+        if not getattr(self, 'driver', None):
+            return False
+        try:
+            _ = self.driver.current_url
+            return True
+        except Exception:
+            return False
+    
+    def load_cookies_from_file_path(self, file_path: str) -> bool:
+        """Загружает cookies из указанного файла в текущий драйвер (для переключения аккаунта)."""
+        if not os.path.exists(file_path):
+            return False
+        if not self.is_driver_alive():
+            return False
+        try:
+            self.driver.get("https://www.pinterest.com")
+            try:
+                WebDriverWait(self.driver, 5).until(
+                    lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+                )
+            except Exception:
+                time.sleep(1)
+            self.driver.delete_all_cookies()
+            cookies = load_cookies_from_file(file_path)
+            if not cookies:
+                return False
+            for name, value in cookies.items():
+                try:
+                    self.driver.add_cookie({
+                        'name': name, 'value': value,
+                        'domain': '.pinterest.com', 'path': '/'
+                    })
+                except Exception:
+                    continue
+            self.driver.refresh()
+            time.sleep(2)
+            return True
+        except Exception as e:
+            print(f"⚠ Ошибка load_cookies_from_file_path: {e}")
+            return False
+    
+    def login_with_credentials(self, email: str, password: str, save_cookies_to: Optional[str] = None) -> bool:
+        """
+        Вход по логину и паролю: заполняет форму на странице Pinterest и сохраняет cookies.
+        save_cookies_to: путь к файлу для сохранения cookies (если None — основной файл).
+        """
+        if not self.driver or not email or not password:
+            return False
+        login_url = "https://ru.pinterest.com/login/"
+        try:
+            self.driver.get(login_url)
+            time.sleep(3)
+            email_field = None
+            for sel in ('input[type="email"]', 'input[name="email"]', 'input[id*="email"]', 'input[placeholder*="email" i]', 'input[placeholder*="почт" i]'):
+                try:
+                    email_field = WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, sel))
+                    )
+                    if email_field and email_field.is_displayed():
+                        break
+                except Exception:
+                    continue
+            if not email_field:
+                print("⚠ Не найдено поле email")
+                return False
+            email_field.clear()
+            email_field.send_keys(email)
+            time.sleep(0.5)
+            pwd_field = None
+            for sel in ('input[type="password"]', 'input[name="password"]', 'input[id*="password"]'):
+                try:
+                    pwd_field = self.driver.find_element(By.CSS_SELECTOR, sel)
+                    if pwd_field and pwd_field.is_displayed():
+                        break
+                except Exception:
+                    continue
+            if not pwd_field:
+                print("⚠ Не найдено поле пароля")
+                return False
+            pwd_field.clear()
+            pwd_field.send_keys(password)
+            time.sleep(0.5)
+            login_btn = None
+            try:
+                login_btn = self.driver.find_element(By.XPATH, "//button[contains(text(), 'Войти') or contains(text(), 'Log in') or @type='submit']")
+            except Exception:
+                pass
+            if not login_btn:
+                try:
+                    login_btn = self.driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
+                except Exception:
+                    pass
+            if not login_btn or not login_btn.is_displayed():
+                print("⚠ Не найдена кнопка входа")
+                return False
+            login_btn.click()
+            time.sleep(5)
+            current_url = self.driver.current_url
+            if '/login' in current_url.lower():
+                print("⚠ Вход не удался (остались на странице логина)")
+                return False
+            cookies_raw = self.driver.get_cookies()
+            cookies_dict = {c['name']: c['value'] for c in cookies_raw if 'pinterest.com' in c.get('domain', '')}
+            if not cookies_dict:
+                print("⚠ Не удалось получить cookies после входа")
+                return False
+            out_path = save_cookies_to
+            if not out_path and USE_PATH_UTILS:
+                out_path = str(get_cookies_path())
+            if not out_path:
+                out_path = self.cookies_file or "pinterest_cookies.json"
+            out_path = str(out_path)
+            try:
+                d = os.path.dirname(out_path)
+                if d:
+                    os.makedirs(d, exist_ok=True)
+            except Exception:
+                pass
+            CookiesManager.save_to_json(cookies_dict, out_path)
+            print(f"✓ Вход выполнен, cookies сохранены: {out_path}")
+            return True
+        except Exception as e:
+            print(f"⚠ Ошибка при входе по логину/паролю: {e}")
+            return False
+    
     def parse_search_page(self, query: str, max_pins: int = None, scroll_times: int = 3) -> List[Dict[str, str]]:
         """
         Парсит страницу поиска Pinterest.
@@ -843,86 +1111,157 @@ class PinterestSeleniumParser:
         
         # Ждем базовой загрузки страницы (не ждем полной загрузки всех ресурсов)
         try:
-            WebDriverWait(self.driver, 8).until(
+            WebDriverWait(self.driver, 5).until(
                 lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
             )
             print("  ✓ Страница загружена")
         except:
             print("  ⚠ Страница загружается, продолжаем...")
-            time.sleep(2)  # Минимальная задержка вместо долгого ожидания
+            time.sleep(1)
         
-        # Динамическая прокрутка до получения нужного количества пинов
+        # Динамическая прокрутка: накапливаем уникальные URL пинов по pin_id (один пин = одна запись, без дублей www/ru)
+        def _pin_id_from_url(u: str) -> str:
+            if not u or "/pin/" not in u:
+                return ""
+            return u.split("/pin/")[-1].split("/")[0].split("?")[0].strip()
+        
+        def _canonical_pin_url(u: str) -> str:
+            pid = _pin_id_from_url(u)
+            return f"https://ru.pinterest.com/pin/{pid}/" if pid else u
+        
         print(f"Прокрутка страницы для загрузки контента (цель: {max_pins} пинов)...")
-        max_scrolls = max(scroll_times * 2, 10)  # Увеличиваем максимальное количество прокруток
-        pins_found = 0
-        last_pins_count = 0
+        max_scrolls = min(max(scroll_times * 5, max_pins // 3, 30), 120)  # не более 120 прокруток даже для 1200+ пинов
+        seen_pin_ids = set()
+        pin_urls_ordered = []  # порядок первого появления, без дублей по pin_id
+        last_count = 0
         no_progress_count = 0
         
         for i in range(max_scrolls):
-            # Прокручиваем страницу
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(2)
+            time.sleep(1.2 if i < 5 else 1.0)
             
-            # Проверяем количество найденных пинов
             try:
                 pin_elements = self.driver.find_elements(By.CSS_SELECTOR, 'a[href*="/pin/"]')
-                pins_found = len(set([elem.get_attribute('href') for elem in pin_elements if elem.get_attribute('href')]))
+                for elem in pin_elements:
+                    try:
+                        href = elem.get_attribute('href')
+                    except StaleElementReferenceException:
+                        continue
+                    if not href:
+                        continue
+                    href = href.split('?')[0].rstrip('/')
+                    if not href.startswith('http'):
+                        href = ('https://www.pinterest.com' + href) if href.startswith('/') else ('https://www.pinterest.com/' + href)
+                    pin_id = _pin_id_from_url(href)
+                    if not pin_id or pin_id in seen_pin_ids:
+                        continue
+                    seen_pin_ids.add(pin_id)
+                    pin_urls_ordered.append(_canonical_pin_url(href))
                 
+                pins_found = len(pin_urls_ordered)
                 print(f"  Прокрутка {i+1}/{max_scrolls}: найдено {pins_found} уникальных пинов")
                 
-                # Если нашли достаточно пинов, останавливаемся
                 if pins_found >= max_pins:
                     print(f"  ✓ Найдено достаточно пинов ({pins_found} >= {max_pins})")
                     break
                 
-                # Проверяем, есть ли прогресс
-                if pins_found == last_pins_count:
+                if pins_found == last_count:
                     no_progress_count += 1
-                    if no_progress_count >= 3:  # Если 3 прокрутки подряд без прогресса, останавливаемся
+                    if no_progress_count >= 5:
                         print(f"  ⚠ Нет прогресса после {no_progress_count} прокруток, останавливаемся")
                         break
                 else:
                     no_progress_count = 0
-                    last_pins_count = pins_found
-                    
+                    last_count = pins_found
             except Exception as e:
                 print(f"  ⚠ Ошибка при проверке количества пинов: {e}")
                 time.sleep(1)
         
-        # Получаем HTML после загрузки JavaScript
-        html = self.driver.page_source
-        soup = BeautifulSoup(html, 'html.parser')
-        
-        # Парсим HTML (JS данные требуют дополнительной обработки)
-        pins_data = self._extract_from_html(soup)
-        
-        # Если не нашли через HTML, пробуем JS данные
+        # Собираем пины: либо из накопленных URL (надёжно при виртуализации), либо из HTML
+        pins_data = []
+        if pin_urls_ordered:
+            pins_data = [{"pin_link": url} for url in pin_urls_ordered[:max_pins]]
+            print(f"Используем {len(pins_data)} пинов из накопленных при прокрутке")
+        if not pins_data:
+            html = self.driver.page_source
+            soup = BeautifulSoup(html, 'html.parser')
+            pins_data = self._extract_from_html(soup)
         if not pins_data:
             pins_data = self._extract_from_js_data()
         
-        # Парсим детальные страницы для получения полной информации
+        # Название и описание — только через API Pinterest (PinResource/get). Картинку при отсутствии в API — со страницы пина.
         if pins_data:
-            print("Получение полной информации о пинах...")
-            for i, pin in enumerate(pins_data[:max_pins]):
-                if pin.get('pin_link'):
-                    detail = self.parse_pin_detail(pin['pin_link'])
-                    if detail:
-                        # Обновляем данные, сохраняя то что уже есть
-                        for key, value in detail.items():
-                            if value or not pins_data[i].get(key):
-                                pins_data[i][key] = value
-                    
-                    # Скачиваем изображение если нужно
-                    if self.download_images and pins_data[i].get('image_url'):
-                        pin_id = pin['pin_link'].split('/pin/')[-1].rstrip('/')
-                        local_path = self._download_image(pins_data[i]['image_url'], pin_id)
-                        if local_path:
-                            pins_data[i]['image_url'] = local_path
-                    
-                    time.sleep(1)  # Задержка между запросами
+            to_fetch = pins_data[:max_pins]
+            print(f"Получение данных о пинах ({len(to_fetch)} шт., API для названия/описания)...")
+            for i, pin in enumerate(to_fetch):
+                if (i + 1) % 50 == 0 or i == 0:
+                    print(f"  Обработано пинов: {i+1}/{len(to_fetch)}")
+                pin_link = pin.get('pin_link')
+                if not pin_link:
+                    continue
+                pin_id = pin_link.split('/pin/')[-1].split('/')[0].strip()
+                if not pin_id:
+                    continue
+                
+                # Title и description только из API — без fallback на разбор HTML
+                detail_api = self._get_pin_via_api(pin_id, pin_link)
+                if detail_api:
+                    pins_data[i]['title'] = (detail_api.get('title') or '').strip()
+                    pins_data[i]['description'] = (detail_api.get('description') or '').strip()
+                    pins_data[i]['image_url'] = (detail_api.get('image_url') or '').strip()
+                    pins_data[i]['media_type'] = detail_api.get('media_type', 'image') or 'image'
+                    if detail_api.get('author'):
+                        pins_data[i]['author'] = detail_api['author']
+                    pins_data[i]['repin_count'] = detail_api.get('repin_count', '')
+                    pins_data[i]['comments_disabled'] = detail_api.get('comments_disabled', '')
+                    pins_data[i]['saves'] = detail_api.get('saves', '')
+                    pins_data[i]['done'] = detail_api.get('done', '')
+                    pins_data[i]['comment_count'] = detail_api.get('comment_count', '')
+                    pins_data[i]['likes'] = detail_api.get('likes', '')
+                    pins_data[i]['created_at'] = detail_api.get('created_at', '')
+                    pins_data[i]['share_count'] = detail_api.get('share_count', '')
+                else:
+                    pins_data[i]['title'] = ''
+                    pins_data[i]['description'] = ''
+                    pins_data[i]['image_url'] = ''
+                    pins_data[i]['repin_count'] = ''
+                    pins_data[i]['comments_disabled'] = ''
+                    pins_data[i]['saves'] = ''
+                    pins_data[i]['done'] = ''
+                    pins_data[i]['comment_count'] = ''
+                    pins_data[i]['likes'] = ''
+                    pins_data[i]['created_at'] = ''
+                    pins_data[i]['share_count'] = ''
+                
+                # Если API не отдал картинку — открываем страницу пина только ради image_url (title/description не берём)
+                if not pins_data[i].get('image_url'):
+                    detail = self.parse_pin_detail(pin_link)
+                    if detail and detail.get('image_url'):
+                        pins_data[i]['image_url'] = detail.get('image_url', '') or ''
+                        pins_data[i]['media_type'] = detail.get('media_type', 'image') or 'image'
+                    time.sleep(0.3)
+                
+                if self.download_images and pins_data[i].get('image_url'):
+                    local_path = self._download_image(pins_data[i]['image_url'], pin_id)
+                    if local_path:
+                        pins_data[i]['image_url'] = local_path
+                    else:
+                        pins_data[i]['image_url'] = ''
+                
+                time.sleep(0.25)
         
-        print(f"Найдено пинов: {len(pins_data)}")
-        return pins_data[:max_pins]
+        # Оставляем только пины с изображением и убираем дубли по pin_id (один пин — одна строка в результате)
+        pins_with_image = [p for p in pins_data if (p.get('image_url') or p.get('image_path') or '').strip()]
+        seen_ids = set()
+        unique_pins = []
+        for p in pins_with_image:
+            link = p.get('pin_link') or ''
+            pid = link.split('/pin/')[-1].split('/')[0].split('?')[0].strip() if '/pin/' in link else ''
+            if pid and pid not in seen_ids:
+                seen_ids.add(pid)
+                unique_pins.append(p)
+        print(f"Найдено пинов: {len(unique_pins)} (только с изображением, без дублей)")
+        return unique_pins[:max_pins]
     
     def _extract_from_js_data(self) -> List[Dict[str, str]]:
         """Извлекает данные из JavaScript переменных на странице"""
@@ -1226,6 +1565,13 @@ class PinterestSeleniumParser:
         try:
             self.driver.get(pin_url)
             time.sleep(PinterestConfig.PAGE_LOAD_DELAY)
+            # Ждём появления контента пина (Pinterest подгружает его через JS)
+            try:
+                WebDriverWait(self.driver, 5).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, '[data-test-id="pin-detail"], [data-test-id="pin-title"], .pinDetail, .PinDetail, h1'))
+                )
+            except Exception:
+                pass
             
             pin_data = {
                 'author': '',
@@ -1236,46 +1582,100 @@ class PinterestSeleniumParser:
                 'description': ''
             }
             
+            # Слова из навигации/интерфейса — не брать как название пина
+            title_exclude = [
+                'Pinterest', 'Save', 'Сохранить', 'Главная', 'Home', 'Main', 'Explore',
+                'Search', 'Поиск', 'Войти', 'Login', 'Sign up', 'Регистрация', 'Create',
+                'Создать', 'Messages', 'Сообщения', 'Notifications', 'Уведомления',
+                'Profile', 'Профиль', 'Settings', 'Настройки', 'Ideas', 'Идеи'
+            ]
+            
             # Сначала пытаемся развернуть описание, нажав на кнопку "больше"
             expanded = self._expand_description()
-            if not expanded:
-                # Если кнопка не найдена, возможно описание уже развернуто
-                pass
+            if expanded:
+                time.sleep(0.8)
             
-            # Ищем название - более тщательный поиск
-            try:
-                title_selectors = [
-                    'h1',
-                    '[data-test-id="pin-title"]',
-                    '.pinTitle',
-                    'div[class*="title"] h1',
-                    'div[class*="Title"] h1',
-                    'h1[class*="title"]',
-                    'h1[class*="Title"]',
-                ]
-                
-                for selector in title_selectors:
-                    try:
-                        title_elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                        for elem in title_elements:
-                            text = elem.text.strip()
-                            # Название обычно короткое и не содержит URL
-                            if (text and len(text) < 200 and 
-                                not text.startswith('http') and
-                                text not in ['Pinterest', 'Save', 'Сохранить']):
-                                pin_data['title'] = text
-                                break
-                        if pin_data['title']:
+            # Ищем контейнер контента пина (чтобы не брать текст из шапки/сайдбара)
+            pin_container = None
+            for container_sel in ['[data-test-id="pin-detail"]', '[data-test-id="closeup-detail-container"]', 'div[class*="PinDetail"]', 'div[class*="pinDetail"]', 'main[role="main"]']:
+                try:
+                    els = self.driver.find_elements(By.CSS_SELECTOR, container_sel)
+                    for el in els:
+                        if el.is_displayed() and el.size.get('height', 0) > 100:
+                            pin_container = el
                             break
-                    except:
-                        continue
-            except Exception as e:
-                print(f"Ошибка при поиске названия: {e}")
-                pass
+                    if pin_container:
+                        break
+                except Exception:
+                    continue
             
-            # Ищем описание - более тщательный поиск с фильтрацией (после разворачивания)
+            def _find_in_container(container, selectors):
+                """Ищет текст по селекторам внутри контейнера или по всей странице."""
+                scope = container if container else self.driver
+                for sel in selectors:
+                    try:
+                        elems = scope.find_elements(By.CSS_SELECTOR, sel)
+                        for elem in elems:
+                            try:
+                                if not elem.is_displayed():
+                                    continue
+                            except Exception:
+                                continue
+                            text = elem.text.strip()
+                            if text:
+                                return text
+                    except Exception:
+                        continue
+                return ''
+            
+            # Название — только из контейнера пина или по приоритетным селекторам
+            title_selectors = [
+                '[data-test-id="pin-title"]',
+                'h1',
+                '.pinTitle',
+                'div[class*="title"] h1',
+                'div[class*="Title"] h1',
+            ]
+            raw_title = _find_in_container(pin_container, title_selectors)
+            if not raw_title:
+                raw_title = _find_in_container(None, title_selectors)
+            if raw_title and len(raw_title) < 200 and not raw_title.startswith('http'):
+                if raw_title not in title_exclude and not any(raw_title == x or raw_title.lower() == x.lower() for x in title_exclude):
+                    pin_data['title'] = raw_title
+            
+            # Fallback: og:title из meta (часто совпадает с названием пина)
+            if not pin_data['title']:
+                try:
+                    og_title = self.driver.find_element(By.CSS_SELECTOR, 'meta[property="og:title"]')
+                    t = (og_title.get_attribute('content') or '').strip()
+                    if '|' in t:
+                        t = t.split('|')[0].strip()
+                    if t and len(t) < 200 and t not in title_exclude:
+                        pin_data['title'] = t
+                except Exception:
+                    pass
+            
+            # Описание — сначала из контейнера пина, с прокруткой к блоку описания
+            exclude_keywords = [
+                'Просмотреть', 'View', 'See more', 'Больше', 'Сохранить', 'Save',
+                'Войти', 'Login', 'Регистрация', 'Sign up', 'Поиск', 'Search',
+                'Комментарии', 'Comments', 'Ингредиенты', 'Ingredients',
+                'Другие интересные пины', 'More ideas', 'Подробнее об этом пине',
+                'Вы вышли из системы', "You've been logged out", 'меньше', 'less',
+                'Repin', 'Send', 'Share', 'Download', 'Скачать', 'Отправить', 'Поделиться',
+                'Follow', 'Подписаться', 'Like', 'Нравится', 'Ideas for you', 'Вам может понравиться'
+            ]
+            
+            def _is_valid_description(text):
+                if not text or text == pin_data['title'] or text.startswith('http'):
+                    return False
+                if len(text) < 15 or len(text) > 5000:
+                    return False
+                if any(kw in text for kw in exclude_keywords):
+                    return False
+                return True
+            
             try:
-                # Пробуем разные селекторы для описания
                 desc_selectors = [
                     '[data-test-id="pin-description"]',
                     '.pinDescription',
@@ -1283,76 +1683,69 @@ class PinterestSeleniumParser:
                     'div[class*="Description"]',
                     'p[class*="description"]',
                     'span[class*="description"]',
-                    # Ищем большие блоки текста
-                    'div[class*="richPin"] p',
-                    'div[class*="RichPin"] p',
-                    # Ищем в основном контенте
-                    'div[class*="PinDetail"] p',
-                    'div[class*="pinDetail"] p',
+                    'div[class*="richPin"] p', 'div[class*="RichPin"] p',
+                    'div[class*="PinDetail"] p', 'div[class*="pinDetail"] p',
                 ]
-                
-                # Слова для фильтрации (исключаем элементы навигации)
-                exclude_keywords = [
-                    'Просмотреть', 'View', 'See more', 'Больше', 'Сохранить', 'Save',
-                    'Войти', 'Login', 'Регистрация', 'Sign up', 'Поиск', 'Search',
-                    'Комментарии', 'Comments', 'Ингредиенты', 'Ingredients',
-                    'Другие интересные пины', 'More ideas', 'Подробнее об этом пине',
-                    'Вы вышли из системы', 'You\'ve been logged out', 'меньше', 'less'
-                ]
-                
                 for selector in desc_selectors:
+                    scope = pin_container if pin_container else self.driver
                     try:
-                        desc_elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                        for elem in desc_elements:
+                        elems = scope.find_elements(By.CSS_SELECTOR, selector)
+                        for elem in elems:
+                            try:
+                                if not elem.is_displayed():
+                                    continue
+                                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+                                time.sleep(0.2)
+                            except Exception:
+                                continue
                             text = elem.text.strip()
-                            # Фильтруем описание - теперь берем полное описание
-                            if (text and len(text) > 50 and 
-                                text != pin_data['title'] and 
-                                not text.startswith('http') and
-                                not any(keyword in text for keyword in exclude_keywords)):
-                                # Берем полное описание (не обрезаем)
+                            if _is_valid_description(text):
                                 pin_data['description'] = text
                                 break
                         if pin_data['description']:
                             break
-                    except:
+                    except Exception:
                         continue
                 
-                # Если не нашли через селекторы, ищем текст с ключевыми словами
+                # Fallback: og:description из meta
                 if not pin_data['description']:
-                    # Ищем в основном контенте страницы
                     try:
-                        # Пробуем найти основной контент
+                        og_desc = self.driver.find_element(By.CSS_SELECTOR, 'meta[property="og:description"]')
+                        d = (og_desc.get_attribute('content') or '').strip()
+                        if _is_valid_description(d):
+                            pin_data['description'] = d
+                    except Exception:
+                        pass
+                
+                # Fallback: подходящая строка из body (исключаем UI и счётчики типа "1.2K")
+                if not pin_data['description']:
+                    try:
+                        import re
                         main_content = self.driver.find_element(By.TAG_NAME, 'body')
                         all_text = main_content.text
-                        
-                        # Разбиваем на строки и ищем описание
                         lines = all_text.split('\n')
                         description_candidates = []
-                        
+                        like_count_re = re.compile(r'^\d+\.?\d*[KkMm]?\s*$')
                         for line in lines:
                             line = line.strip()
-                            if (line and len(line) > 50 and len(line) < 2000 and
-                                line != pin_data['title'] and
-                                not line.startswith('http') and
-                                not any(keyword in line for keyword in exclude_keywords) and
-                                ('Want' in line or 'Discover' in line or 'recipe' in line.lower() or 
-                                 'flavor' in line.lower() or 'delightful' in line.lower() or
-                                 'perfect' in line.lower() or 'delicious' in line.lower() or
-                                 'savory' in line.lower() or 'tantalize' in line.lower() or
-                                 'tasty' in line.lower() or 'easy' in line.lower())):
-                                description_candidates.append(line)
-                        
-                        # Берем первое подходящее описание (полное, не обрезаем)
+                            if not line or line == pin_data['title'] or line.startswith('http'):
+                                continue
+                            if len(line) < 15 or len(line) > 2000:
+                                continue
+                            if any(kw in line for kw in exclude_keywords):
+                                continue
+                            if any(line == x or line.lower() == x.lower() for x in title_exclude):
+                                continue
+                            if like_count_re.match(line):
+                                continue
+                            description_candidates.append(line)
                         if description_candidates:
-                            # Берем самое длинное и подходящее
                             best_desc = max(description_candidates, key=len)
                             pin_data['description'] = best_desc
-                    except:
+                    except Exception:
                         pass
             except Exception as e:
                 print(f"Ошибка при поиске описания: {e}")
-                pass
             
             # Ищем автора (избегаем кнопок типа "Просмотреть")
             try:
@@ -1490,9 +1883,9 @@ class PinterestSeleniumParser:
                 print(f"⚠ Ошибка при переходе на /me: {e}")
                 return None
             
-            # Ждем загрузки и редиректа (с таймаутом)
+            # Ждем загрузки и редиректа (таймаут 5 сек — не блокировать надолго при незалогиненном)
             try:
-                WebDriverWait(self.driver, 10).until(
+                WebDriverWait(self.driver, 5).until(
                     lambda d: '/me' not in d.current_url or 'pinterest.com' in d.current_url
                 )
             except Exception as e:
@@ -1743,25 +2136,38 @@ class PinterestSeleniumParser:
             except Exception as e:
                 print(f"Ошибка альтернативного метода: {e}")
         
-        # Получаем полную информацию о пинах
+        # Получаем полную информацию о пинах — только из страницы пина, чтобы ссылка и карточка совпадали
         if pins_data:
             print("Получение полной информации о пинах...")
             for i, pin in enumerate(pins_data[:max_pins]):
-                if pin.get('pin_link') and not pin.get('title'):
+                if pin.get('pin_link'):
                     detail = self.parse_pin_detail(pin['pin_link'])
                     if detail:
-                        pins_data[i].update(detail)
+                        pins_data[i]['pin_link'] = detail.get('pin_link') or pins_data[i]['pin_link']
+                        pins_data[i]['title'] = detail.get('title', '') or ''
+                        pins_data[i]['description'] = detail.get('description', '') or ''
+                        pins_data[i]['image_url'] = detail.get('image_url', '') or ''
+                        pins_data[i]['media_type'] = detail.get('media_type', 'image') or 'image'
+                        if detail.get('author'):
+                            pins_data[i]['author'] = detail['author']
+                    else:
+                        pins_data[i]['title'] = ''
+                        pins_data[i]['description'] = ''
+                        pins_data[i]['image_url'] = ''
                     
-                    # Скачиваем изображение если нужно
+                    # Скачиваем изображение если нужно; без картинки пин не включаем
                     if self.download_images and pins_data[i].get('image_url'):
                         pin_id = pin['pin_link'].split('/pin/')[-1].rstrip('/')
                         local_path = self._download_image(pins_data[i]['image_url'], pin_id)
                         if local_path:
                             pins_data[i]['image_url'] = local_path
+                        else:
+                            pins_data[i]['image_url'] = ''
                     
                     time.sleep(1)
         
-        print(f"Найдено пинов: {len(pins_data)}")
+        pins_data = [p for p in pins_data if (p.get('image_url') or p.get('image_path') or '').strip()]
+        print(f"Найдено пинов: {len(pins_data)} (только с изображением)")
         return pins_data[:max_pins]
     
     def parse_user_boards(self, username: str = None) -> List[Dict[str, str]]:
@@ -1930,25 +2336,38 @@ class PinterestSeleniumParser:
             pin['board_name'] = board_name
             pin['board_url'] = url
         
-        # Получаем полную информацию о пинах
+        # Получаем полную информацию о пинах — только из страницы пина, чтобы ссылка и карточка совпадали
         if pins_data:
             print("Получение полной информации о пинах...")
             for i, pin in enumerate(pins_data[:max_pins]):
-                if pin.get('pin_link') and not pin.get('title'):
+                if pin.get('pin_link'):
                     detail = self.parse_pin_detail(pin['pin_link'])
                     if detail:
-                        pins_data[i].update(detail)
+                        pins_data[i]['pin_link'] = detail.get('pin_link') or pins_data[i]['pin_link']
+                        pins_data[i]['title'] = detail.get('title', '') or ''
+                        pins_data[i]['description'] = detail.get('description', '') or ''
+                        pins_data[i]['image_url'] = detail.get('image_url', '') or ''
+                        pins_data[i]['media_type'] = detail.get('media_type', 'image') or 'image'
+                        if detail.get('author'):
+                            pins_data[i]['author'] = detail['author']
+                    else:
+                        pins_data[i]['title'] = ''
+                        pins_data[i]['description'] = ''
+                        pins_data[i]['image_url'] = ''
                     
-                    # Скачиваем изображение если нужно
+                    # Скачиваем изображение если нужно; без картинки пин не включаем
                     if self.download_images and pins_data[i].get('image_url'):
                         pin_id = pin['pin_link'].split('/pin/')[-1].rstrip('/')
                         local_path = self._download_image(pins_data[i]['image_url'], pin_id)
                         if local_path:
                             pins_data[i]['image_url'] = local_path
+                        else:
+                            pins_data[i]['image_url'] = ''
                     
                     time.sleep(1)
         
-        print(f"Найдено пинов в доске: {len(pins_data)}")
+        pins_data = [p for p in pins_data if (p.get('image_url') or p.get('image_path') or '').strip()]
+        print(f"Найдено пинов в доске: {len(pins_data)} (только с изображением)")
         return pins_data[:max_pins]
     
     def close(self):
@@ -2052,7 +2471,8 @@ if __name__ == "__main__":
             import csv
             filename = f"pinterest_pins_{query.replace(' ', '_').replace('/', '_')[:50]}.csv"
             if pins:
-                fieldnames = ['title', 'description', 'pin_link', 'image_url', 'author', 'board_name', 'board_url']
+                fieldnames = ['title', 'description', 'pin_link', 'image_url', 'author', 'board_name', 'board_url',
+                    'repin_count', 'comments_disabled', 'saves', 'done', 'comment_count', 'likes', 'created_at', 'share_count']
                 with open(filename, 'w', newline='', encoding='utf-8') as f:
                     writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
                     writer.writeheader()

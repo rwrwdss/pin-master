@@ -21,9 +21,11 @@ arch = platform.machine()
 if arch != 'arm64':
     print(f"⚠️  Предупреждение: обнаружена архитектура {arch}, ожидается arm64 (Apple Silicon)")
 
-# Пути
+# Пути и версия
 BASE_DIR = Path(__file__).parent
 APP_NAME = "PinMaster"
+VERSION = "1.0.0"
+BUILD = "20250204"
 ICON_FILE = BASE_DIR / "icon.icns"
 STYLES_FILE = BASE_DIR / "styles.qss"
 MAIN_SCRIPT = BASE_DIR / "qt_main_window.py"
@@ -185,6 +187,13 @@ def create_spec_file():
         datas.append(f"('{STYLES_FILE.name}', '.')")
     if ICON_FILE.exists():
         datas.append(f"('{ICON_FILE.name}', '.')")
+    # Браузеры Playwright — при наличии архива пользователям не нужен интернет для публикации
+    playwright_archive = BASE_DIR / "playwright-browsers.tar.gz"
+    if playwright_archive.exists():
+        datas.append(f"('{playwright_archive.name}', '.')")
+        print(f"✓ Playwright браузеры будут в bundle (~{playwright_archive.stat().st_size // (1024*1024)} MB)")
+    else:
+        print("⚠️  playwright-browsers.tar.gz не найден — для автопубликации пользователю понадобится интернет при первом запуске или положите архив в корень проекта и пересоберите")
     
     # Добавляем chromedriver если он был загружен
     binaries = []
@@ -231,8 +240,8 @@ a = Analysis(
         'webdriver_manager.core.driver_cache',
         'webdriver_manager.core.os_manager',
         'webdriver_manager.core.utils',
-        'webdriver_frozen_patch',  # Патч для frozen режима
-        'chromedriver_helper',  # Хелпер для правильного пути к chromedriver
+        'webdriver_frozen_patch',
+        'chromedriver_helper',
         'requests',
         'beautifulsoup4',
         'bs4',
@@ -248,6 +257,23 @@ a = Analysis(
         'time',
         'os',
         'sys',
+        # Локальные модули (обязательно для прод, иначе возможны ImportError в .app)
+        'cache_manager',
+        'cookies_manager',
+        'path_utils',
+        'pinterest_publisher',
+        'pinterest_selenium_parser',
+        'pinterest_selectors',
+        'status_indicator',
+        'toast_notification',
+        'board_scraper',
+        'pinterest_auth',
+        # Playwright
+        'playwright',
+        'playwright.sync_api',
+        'playwright._impl',
+        'greenlet',
+        'pyee',
     ],
     hookspath=[],
     hooksconfig={{}},
@@ -288,8 +314,12 @@ app = BUNDLE(
     name='{APP_NAME}.app',
     icon={f"'{ICON_FILE.name}'" if ICON_FILE.exists() else "None"},
     bundle_identifier='com.pinmaster.app',
-    version='1.0.0',
+    version='{VERSION}',
     info_plist={{
+        'CFBundleName': 'PinMaster',
+        'CFBundleDisplayName': 'PinMaster',
+        'CFBundleShortVersionString': '{VERSION}',
+        'CFBundleVersion': '{BUILD}',
         'NSPrincipalClass': 'NSApplication',
         'NSHighResolutionCapable': 'True',
         'NSRequiresAquaSystemAppearance': 'False',
@@ -381,54 +411,119 @@ def build_app():
     print(f"✓ Приложение собрано: {app_path}")
     return app_path
 
+def _create_dmg_background(dest_dir: Path) -> bool:
+    """Создаёт фоновое изображение для окна DMG (градиент). Возвращает True если создано."""
+    bg_dir = dest_dir / ".background"
+    bg_dir.mkdir(parents=True, exist_ok=True)
+    bg_path = bg_dir / "background.png"
+    try:
+        from PIL import Image
+        w, h = 540, 384
+        img = Image.new("RGB", (w, h))
+        pixels = img.load()
+        for y in range(h):
+            for x in range(w):
+                # Градиент: тёмно-серый сверху → светлый снизу
+                t = y / h
+                r = int(45 + (220 - 45) * t)
+                g = int(48 + (222 - 48) * t)
+                b = int(52 + (225 - 52) * t)
+                pixels[x, y] = (r, g, b)
+        img.save(bg_path, "PNG")
+        return True
+    except Exception:
+        try:
+            # Минимальный фон: один цвет
+            from PIL import Image
+            img = Image.new("RGB", (540, 384), color=(240, 240, 242))
+            img.save(bg_path, "PNG")
+            return True
+        except Exception:
+            return False
+
+
+def _style_dmg_with_applescript(mount_point: str) -> bool:
+    """Применяет оформление окна DMG: позиции иконок и размер окна (без фона — избегаем ошибки AppleScript)."""
+    vol_name = os.path.basename(mount_point.rstrip("/"))
+    # Оформление: вид иконок, размер окна, позиции (PinMaster слева, Applications справа)
+    script = (
+        f'tell application "Finder"\n'
+        f'  tell disk "{vol_name}"\n'
+        '    open\n'
+        '    set theWindow to container window\n'
+        '    set current view of theWindow to icon view\n'
+        '    set toolbar visible of theWindow to false\n'
+        '    set statusbar visible of theWindow to false\n'
+        '    set the bounds of theWindow to {100, 100, 640, 484}\n'
+        '    set theOptions to icon view options of theWindow\n'
+        '    set icon size of theOptions to 96\n'
+        '    set arrangement of theOptions to not arranged\n'
+        f'    set position of item "{APP_NAME}.app" of theWindow to {120, 170}\n'
+        '    set position of item "Applications" of theWindow to {380, 170}\n'
+        '    close\n'
+        '    open\n'
+        '    update without registering applications\n'
+        '    delay 0.5\n'
+        '    close\n'
+        '  end tell\n'
+        'end tell\n'
+    )
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0 and result.stderr:
+            print(f"   ⚠️  AppleScript: {result.stderr.strip()}")
+        return result.returncode == 0
+    except Exception as e:
+        print(f"   ⚠️  Оформление DMG: {e}")
+        return False
+
+
 def create_dmg(app_path):
-    """Создает .dmg установщик используя встроенные инструменты macOS"""
+    """Создает стилизованный .dmg установщик (фон, иконки, окно)."""
     print("\n💿 Создание .dmg установщика...")
     
     dmg_path = DIST_DIR / f"{APP_NAME}.dmg"
     
-    # Удаляем старый DMG если есть
     if dmg_path.exists():
         print("   Удаление старого DMG...")
         dmg_path.unlink()
     
-    # Создаем временную папку для DMG
     dmg_temp = DIST_DIR / "dmg_temp"
     if dmg_temp.exists():
-        print("   Очистка временной папки...")
         shutil.rmtree(dmg_temp)
     dmg_temp.mkdir()
     
-    # Копируем .app в временную папку
     print("   Копирование приложения...")
     shutil.copytree(app_path, dmg_temp / f"{APP_NAME}.app")
     
-    # Создаем симлинк на Applications
-    print("   Создание ссылки на Applications...")
+    print("   Ссылка на Applications...")
     try:
         os.symlink("/Applications", dmg_temp / "Applications")
     except FileExistsError:
         pass
     
-    # Создаем DMG используя hdiutil (встроенный инструмент macOS)
-    print("   Создание DMG образа...")
+    # Фон для окна DMG
+    if _create_dmg_background(dmg_temp):
+        print("   ✓ Фон DMG создан")
     
-    # Сначала создаем временный DMG
+    print("   Создание DMG образа...")
     temp_dmg = DIST_DIR / f"{APP_NAME}_temp.dmg"
     if temp_dmg.exists():
         temp_dmg.unlink()
     
-    # Создаем DMG образ
     cmd_create = [
         "hdiutil", "create",
         "-volname", APP_NAME,
         "-srcfolder", str(dmg_temp),
         "-ov",
-        "-format", "UDRW",  # Сначала создаем read-write образ
+        "-format", "UDRW",
         str(temp_dmg)
     ]
-    
-    print(f"   Выполняю: {' '.join(cmd_create)}")
     result = subprocess.run(cmd_create, check=False, capture_output=True)
     
     if result.returncode != 0:
@@ -439,8 +534,7 @@ def create_dmg(app_path):
             temp_dmg.unlink()
         return None
     
-    # Монтируем DMG для настройки
-    print("   Настройка DMG...")
+    print("   Монтирование и оформление окна...")
     mount_cmd = ["hdiutil", "attach", "-readwrite", "-noverify", "-noautoopen", str(temp_dmg)]
     mount_result = subprocess.run(mount_cmd, capture_output=True, text=True)
     
@@ -452,44 +546,40 @@ def create_dmg(app_path):
             temp_dmg.unlink()
         return None
     
-    # Получаем точку монтирования
     mount_point = None
-    for line in mount_result.stdout.split('\n'):
-        if '/Volumes' in line and APP_NAME in line:
-            parts = line.split('\t')
+    for line in mount_result.stdout.split("\n"):
+        if "/Volumes" in line and APP_NAME in line:
+            parts = line.split("\t")
             if len(parts) > 2:
                 mount_point = parts[-1].strip()
                 break
     
     if not mount_point:
-        # Пробуем найти точку монтирования другим способом
+        import plistlib
         list_cmd = ["hdiutil", "info", "-plist"]
         list_result = subprocess.run(list_cmd, capture_output=True, text=True)
-        import plistlib
         try:
             info = plistlib.loads(list_result.stdout.encode())
-            for entity in info.get('images', []):
-                for system in entity.get('system-entities', []):
-                    if system.get('mount-point'):
-                        mount_point = system['mount-point']
+            for entity in info.get("images", []):
+                for system in entity.get("system-entities", []):
+                    if system.get("mount-point"):
+                        mount_point = system["mount-point"]
                         break
                 if mount_point:
                     break
-        except:
+        except Exception:
             pass
     
     if mount_point and os.path.exists(mount_point):
-        try:
-            # Настраиваем иконки и позиции (опционально, требует AppleScript)
-            # Это улучшает внешний вид DMG, но не критично
-            pass
-        except Exception as e:
-            print(f"   Предупреждение при настройке DMG: {e}")
-        
-        # Размонтируем
+        _style_dmg_with_applescript(mount_point)
         subprocess.run(["hdiutil", "detach", mount_point], capture_output=True)
+    else:
+        # Точка монтирования не найдена — ищем том по имени и отключаем
+        for vol in Path("/Volumes").iterdir():
+            if vol.name == APP_NAME and vol.is_dir():
+                subprocess.run(["hdiutil", "detach", str(vol)], capture_output=True)
+                break
     
-    # Конвертируем в read-only сжатый формат
     print("   Сжатие DMG...")
     cmd_convert = [
         "hdiutil", "convert",
@@ -525,8 +615,18 @@ def create_dmg(app_path):
 def main():
     """Главная функция"""
     print("=" * 60)
-    print(f"🔨 Сборка установщика для macOS (Apple Silicon)")
+    print(f"🔨 Сборка установщика для macOS (Apple Silicon) — {APP_NAME} {VERSION} ({BUILD})")
     print("=" * 60)
+    # Удаляем старые сборки и старый spec в начале (spec будет сгенерирован заново с актуальным chromedriver)
+    if BUILD_DIR.exists():
+        print("   Удаление старых артефактов build/...")
+        shutil.rmtree(BUILD_DIR)
+    if DIST_DIR.exists():
+        print("   Удаление старых артефактов dist/...")
+        shutil.rmtree(DIST_DIR)
+    if SPEC_FILE.exists():
+        print("   Удаление старого PinMaster.spec (будет создан заново с актуальными путями)...")
+        SPEC_FILE.unlink()
     print("\n💡 Важно:")
     print("   - Убедитесь, что используете Python для arm64 (Apple Silicon)")
     print("   - Все зависимости должны быть установлены для arm64")
