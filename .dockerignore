@@ -1,0 +1,55 @@
+# Игнорируем при сборке Docker образа
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Виртуальные окружения
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Данные
+data/
+*.csv
+pinterest_images_*/
+pinterest_cookies.json
+config.json
+
+# Логи
+*.log
+logs/
+
+# Git
+.git/
+.gitignore
+
+# Документация
+*.md
+!README.md
+
+# Сборка
+*.spec
+build_macos.sh

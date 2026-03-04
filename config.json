@@ -1,0 +1,27 @@
+{
+  "enable_login": true,
+  "login_url": "https://ru.pinterest.com/login/",
+  "cookies_file": "pinterest_cookies.json",
+  "headless": true,
+  "download_images": true,
+  "wait_for_manual_login": true,
+  "login_timeout": 300,
+  "openrouter_api_key": "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",
+  "last_login_check_timestamp": "2026-02-04T15:26:01.988378",
+  "accounts": [
+    {
+      "id": "1",
+      "name": "demuscull",
+      "cookies_file": "account_1_cookies.json"
+    },
+    {
+      "id": "2",
+      "name": "onerasher228@gmail.com",
+      "cookies_file": "account_2_cookies.json",
+      "pinterest_username": "oliverdaren"
+    }
+  ],
+  "pinterest_login": "onerasher228@gmail.com",
+  "ai_tokens_used": 564924,
+  "ai_cost": 0.05649240000000001
+}
