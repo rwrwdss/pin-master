@@ -21,12 +21,14 @@ from bs4 import BeautifulSoup
 
 from pinterest_selectors import PinterestSelectors, PinterestURLs, PinterestConfig
 from cookies_manager import load_cookies_from_file
+from pinterest_auth import PinterestAuth
 
 
 class PinterestSeleniumParser:
     """Парсер Pinterest с использованием Selenium"""
     
-    def __init__(self, cookies_file: Optional[str] = None, headless: bool = True, download_images: bool = True):
+    def __init__(self, cookies_file: Optional[str] = None, headless: bool = True, 
+                 download_images: bool = True, auto_login: bool = False):
         """
         Инициализирует парсер с Selenium.
         
@@ -34,13 +36,22 @@ class PinterestSeleniumParser:
             cookies_file: Путь к файлу с cookies
             headless: Запускать браузер в фоновом режиме
             download_images: Скачивать изображения в локальную папку
+            auto_login: Автоматически выполнять логин если cookies нет
         """
         self.cookies_file = cookies_file
         self.headless = headless
         self.download_images = download_images
+        self.auto_login = auto_login
         self.images_dir = None
         self.driver = None
         self._setup_driver()
+        
+        # Проверяем авторизацию и логинимся если нужно
+        if self.auto_login:
+            print(f"\n🔐 Авторизация включена (auto_login={self.auto_login})")
+            self._ensure_authentication()
+        else:
+            print(f"\nℹ Авторизация отключена (auto_login={self.auto_login})")
         
         # Создаем папку для изображений если нужно
         if self.download_images:
@@ -70,6 +81,192 @@ class PinterestSeleniumParser:
             print(f"Ошибка при запуске Chrome драйвера: {e}")
             print("Убедитесь, что Chrome установлен на системе")
             raise
+    
+    def _ensure_authentication(self):
+        """Проверяет авторизацию и выполняет логин если нужно"""
+        try:
+            print("\n" + "=" * 80)
+            print("ПРОВЕРКА АВТОРИЗАЦИИ")
+            print("=" * 80)
+            
+            # Проверяем наличие cookies файла
+            cookies_file = self.cookies_file or "pinterest_cookies.json"
+            if os.path.exists(cookies_file):
+                print(f"✓ Найден файл cookies: {cookies_file}")
+                # Пробуем загрузить cookies
+                cookies = load_cookies_from_file(cookies_file)
+                if cookies:
+                    print(f"✓ Загружено {len(cookies)} cookies из файла")
+                    
+                    # Проверяем что окно браузера открыто
+                    try:
+                        self.driver.current_url
+                    except:
+                        print("⚠ Окно браузера закрыто, перезапускаю...")
+                        self._setup_driver()
+                    
+                    # Загружаем cookies в браузер
+                    print("  Загрузка cookies в браузер...")
+                    self.driver.get("https://www.pinterest.com")
+                    
+                    # Ждем загрузки страницы (оптимизированно)
+                    try:
+                        # Ждем только базовую загрузку, не полную
+                        WebDriverWait(self.driver, 5).until(
+                            lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+                        )
+                    except:
+                        time.sleep(1)  # Минимальная задержка
+                    
+                    # Устанавливаем cookies с проверкой
+                    cookies_set = 0
+                    for name, value in cookies.items():
+                        try:
+                            # Проверяем что окно еще открыто
+                            self.driver.current_url
+                            
+                            self.driver.add_cookie({
+                                'name': name,
+                                'value': value,
+                                'domain': '.pinterest.com',
+                                'path': '/'
+                            })
+                            cookies_set += 1
+                        except Exception as e:
+                            # Игнорируем ошибки установки отдельных cookies
+                            continue
+                    
+                    print(f"  ✓ Установлено {cookies_set} из {len(cookies)} cookies")
+                    
+                    # Перезагружаем страницу с cookies
+                    self.driver.refresh()
+                    
+                    # Ждем базовой загрузки (не ждем полной загрузки всех ресурсов)
+                    try:
+                        WebDriverWait(self.driver, 8).until(
+                            lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+                        )
+                    except:
+                        time.sleep(2)  # Минимальная задержка
+                    
+                    # Проверяем авторизацию
+                    page_source = self.driver.page_source.lower()
+                    current_url = self.driver.current_url
+                    
+                    # Проверяем признаки авторизации (более тщательно)
+                    is_authorized = (
+                        'create' in page_source or 
+                        'saved' in page_source or 
+                        'profile' in page_source or
+                        ('pinterest.com' in current_url and '/login' not in current_url.lower() and '/business' not in current_url.lower())
+                    )
+                    
+                    if is_authorized:
+                        print("✓ Используется существующая валидная сессия")
+                        print("=" * 80 + "\n")
+                        return
+                    else:
+                        print(f"⚠ Сессия невалидна или истекла (URL: {current_url[:80]})")
+                        # Проверяем есть ли кнопка "Войти" на странице
+                        if 'войти' in page_source or 'log in' in page_source or 'login' in current_url.lower():
+                            print("  На странице обнаружена форма входа - требуется авторизация")
+            else:
+                print(f"⚠ Файл cookies не найден: {cookies_file}")
+            
+            # Если cookies нет или невалидны, выполняем логин
+            print("\n⚠ Сессия не найдена или невалидна. Выполняется авторизация...")
+            print("=" * 80 + "\n")
+            
+            # Используем текущий браузер для логина (не создаем новый)
+            # Для логина нужен видимый браузер
+            was_headless = self.headless
+            if was_headless:
+                print("⚠ Внимание: headless режим временно отключен для логина")
+                print("   Браузер будет видимым для ручного входа\n")
+                # Перезапускаем драйвер в видимом режиме
+                self.driver.quit()
+                self.headless = False
+                self._setup_driver()
+            
+            # Выполняем логин в текущем браузере
+            login_url = "https://ru.pinterest.com/login/"
+            print(f"🌐 Открываю страницу логина: {login_url}")
+            self.driver.get(login_url)
+            time.sleep(3)
+            
+            print("\n" + "=" * 80)
+            print("🔐 ОЖИДАНИЕ РУЧНОГО ЛОГИНА")
+            print("=" * 80)
+            print("📌 ВАЖНО: Войдите в свой аккаунт Pinterest в открывшемся браузере!")
+            print("   1. Введите ваш email и пароль")
+            print("   2. Нажмите кнопку 'Войти' или 'Log in'")
+            print("   3. Дождитесь загрузки главной страницы Pinterest")
+            print("   4. Сессия будет автоматически сохранена")
+            print()
+            print(f"⏱ Ожидание: 300 секунд (5 минут)")
+            print("=" * 80)
+            print()
+            
+            # Ждем пока пользователь залогинится
+            timeout = 300
+            start_time = time.time()
+            check_interval = 5
+            
+            while time.time() - start_time < timeout:
+                try:
+                    current_url = self.driver.current_url
+                    
+                    # Если мы не на странице логина, возможно пользователь залогинился
+                    if '/login' not in current_url.lower():
+                        # Проверяем признаки авторизации
+                        page_source = self.driver.page_source.lower()
+                        if 'create' in page_source or 'saved' in page_source or 'profile' in page_source:
+                            print("\n✓ Обнаружен успешный вход!")
+                            time.sleep(2)
+                            
+                            # Сохраняем cookies
+                            cookies = self.driver.get_cookies()
+                            cookies_dict = {}
+                            for cookie in cookies:
+                                if 'pinterest.com' in cookie.get('domain', ''):
+                                    cookies_dict[cookie['name']] = cookie['value']
+                            
+                            if cookies_dict:
+                                cookies_file = self.cookies_file or "pinterest_cookies.json"
+                                from cookies_manager import CookiesManager
+                                CookiesManager.save_to_json(cookies_dict, cookies_file)
+                                print(f"✓ Сессия сохранена: {len(cookies_dict)} cookies")
+                            
+                            print("=" * 80 + "\n")
+                            return
+                    
+                    # Показываем прогресс
+                    elapsed = int(time.time() - start_time)
+                    if elapsed % 30 == 0 and elapsed > 0:
+                        remaining = timeout - elapsed
+                        minutes = remaining // 60
+                        seconds = remaining % 60
+                        print(f"⏳ Ожидание входа... Осталось ~{minutes} мин {seconds} сек")
+                    
+                    time.sleep(check_interval)
+                    
+                except Exception as e:
+                    print(f"⚠ Ошибка при проверке статуса: {e}")
+                    time.sleep(check_interval)
+            
+            print("\n⚠ Время ожидания истекло")
+            print("=" * 80 + "\n")
+            
+            # Возвращаем headless режим если был
+            if was_headless:
+                self.driver.quit()
+                self.headless = True
+                self._setup_driver()
+        except Exception as e:
+            print(f"\n⚠ Ошибка при проверке авторизации: {e}")
+            import traceback
+            traceback.print_exc()
+            print("=" * 80 + "\n")
     
     def _create_images_directory(self):
         """Создает папку с рандомным названием для сохранения изображений"""
@@ -140,32 +337,63 @@ class PinterestSeleniumParser:
     
     def _load_cookies(self):
         """Загружает cookies в браузер"""
-        if not self.cookies_file:
-            if not load_cookies_from_file("pinterest_cookies.json"):
-                return False
-        
-        cookies = load_cookies_from_file(self.cookies_file or "pinterest_cookies.json")
-        if not cookies:
-            return False
-        
-        # Переходим на Pinterest для установки cookies
-        self.driver.get("https://www.pinterest.com")
-        time.sleep(2)
-        
-        # Устанавливаем cookies
-        for name, value in cookies.items():
+        try:
+            # Проверяем что окно браузера открыто
             try:
-                self.driver.add_cookie({
-                    'name': name,
-                    'value': value,
-                    'domain': '.pinterest.com',
-                    'path': '/'
-                })
-            except Exception as e:
-                print(f"Ошибка при установке cookie {name}: {e}")
-        
-        print(f"✓ Загружено {len(cookies)} cookies")
-        return True
+                self.driver.current_url
+            except:
+                print("⚠ Окно браузера закрыто, перезапускаю...")
+                self._setup_driver()
+            
+            if not self.cookies_file:
+                if not load_cookies_from_file("pinterest_cookies.json"):
+                    return False
+            
+            cookies = load_cookies_from_file(self.cookies_file or "pinterest_cookies.json")
+            if not cookies:
+                return False
+            
+            # Переходим на Pinterest для установки cookies
+            self.driver.get("https://www.pinterest.com")
+            
+            # Ждем базовой загрузки страницы (оптимизированно)
+            try:
+                WebDriverWait(self.driver, 5).until(
+                    lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+                )
+            except:
+                time.sleep(1)  # Минимальная задержка
+            
+            # Устанавливаем cookies с проверкой
+            cookies_set = 0
+            for name, value in cookies.items():
+                try:
+                    # Проверяем что окно еще открыто
+                    self.driver.current_url
+                    
+                    self.driver.add_cookie({
+                        'name': name,
+                        'value': value,
+                        'domain': '.pinterest.com',
+                        'path': '/'
+                    })
+                    cookies_set += 1
+                except Exception as e:
+                    # Игнорируем ошибки установки отдельных cookies
+                    continue
+            
+            if cookies_set > 0:
+                print(f"✓ Загружено {cookies_set} cookies в браузер")
+                # Перезагружаем страницу чтобы применить cookies
+                self.driver.refresh()
+                time.sleep(2)
+                return True
+            else:
+                print("⚠ Не удалось установить cookies")
+                return False
+        except Exception as e:
+            print(f"⚠ Ошибка при загрузке cookies: {e}")
+            return False
     
     def parse_search_page(self, query: str, max_pins: int = None, scroll_times: int = 3) -> List[Dict[str, str]]:
         """
@@ -185,13 +413,32 @@ class PinterestSeleniumParser:
         url = PinterestURLs.SEARCH_URL.format(query=query)
         print(f"Загрузка страницы: {url}")
         
-        # Загружаем cookies если есть
-        if self.cookies_file or load_cookies_from_file("pinterest_cookies.json"):
-            self._load_cookies()
+        # Проверяем что окно браузера открыто
+        try:
+            self.driver.current_url
+        except:
+            print("⚠ Окно браузера закрыто, перезапускаю...")
+            self._setup_driver()
+        
+        # Загружаем cookies если есть (только если еще не загружены)
+        if self.cookies_file or os.path.exists("pinterest_cookies.json"):
+            if not hasattr(self, '_cookies_loaded') or not self._cookies_loaded:
+                self._load_cookies()
+                self._cookies_loaded = True
         
         # Переходим на страницу поиска
+        print(f"  Переход на страницу поиска...")
         self.driver.get(url)
-        time.sleep(PinterestConfig.PAGE_LOAD_DELAY)
+        
+        # Ждем базовой загрузки страницы (не ждем полной загрузки всех ресурсов)
+        try:
+            WebDriverWait(self.driver, 8).until(
+                lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+            )
+            print("  ✓ Страница загружена")
+        except:
+            print("  ⚠ Страница загружается, продолжаем...")
+            time.sleep(2)  # Минимальная задержка вместо долгого ожидания
         
         # Прокручиваем страницу для загрузки контента
         print("Прокрутка страницы для загрузки контента...")
@@ -297,22 +544,77 @@ class PinterestSeleniumParser:
                     
                     # Извлекаем данные
                     image_url = ""
+                    media_type = "image"  # image, video, gif
                     title = ""
                     description = ""
                     author = ""
                     
-                    # Ищем изображение
+                    # Ищем медиа-контент (изображение, видео, GIF)
                     try:
-                        img = parent.find_element(By.TAG_NAME, 'img')
-                        image_url = img.get_attribute('src') or img.get_attribute('data-src') or img.get_attribute('data-lazy-src')
+                        # Сначала проверяем, есть ли видео
+                        try:
+                            video = parent.find_element(By.TAG_NAME, 'video')
+                            # Для видео берем постер (превью) или источник
+                            image_url = (video.get_attribute('poster') or 
+                                        video.get_attribute('src') or
+                                        video.get_attribute('data-src'))
+                            if image_url:
+                                media_type = "video"
+                        except:
+                            # Если видео нет, ищем изображение
+                            try:
+                                img = parent.find_element(By.TAG_NAME, 'img')
+                                image_url = (img.get_attribute('src') or 
+                                           img.get_attribute('data-src') or 
+                                           img.get_attribute('data-lazy-src'))
+                                
+                                # Проверяем, не GIF ли это
+                                if image_url:
+                                    # Проверяем по URL или атрибутам
+                                    img_src_lower = image_url.lower()
+                                    if '.gif' in img_src_lower or 'gif' in img.get_attribute('alt', '').lower():
+                                        media_type = "gif"
+                                    
+                                    # Проверяем наличие индикатора GIF/Video на странице
+                                    try:
+                                        # Ищем элементы с текстом "GIF" или "Video"
+                                        indicators = parent.find_elements(By.XPATH, 
+                                            ".//*[contains(text(), 'GIF') or contains(text(), 'Video') or contains(text(), 'VIDEO')]")
+                                        if indicators:
+                                            indicator_text = indicators[0].text.strip().upper()
+                                            if 'GIF' in indicator_text:
+                                                media_type = "gif"
+                                            elif 'VIDEO' in indicator_text or 'VIDEO' in indicator_text:
+                                                media_type = "video"
+                                    except:
+                                        pass
+                                
+                                if not image_url:
+                                    # Пробуем через style background-image
+                                    style = img.get_attribute('style') or parent.get_attribute('style')
+                                    if style and 'background-image' in style:
+                                        import re
+                                        match = re.search(r'url\(["\']?([^"\']+)["\']?\)', style)
+                                        if match:
+                                            image_url = match.group(1)
+                            except:
+                                pass
+                        
+                        # Если не нашли через теги, пробуем найти через data-атрибуты
                         if not image_url:
-                            # Пробуем через style background-image
-                            style = img.get_attribute('style') or parent.get_attribute('style')
-                            if style and 'background-image' in style:
-                                import re
-                                match = re.search(r'url\(["\']?([^"\']+)["\']?\)', style)
-                                if match:
-                                    image_url = match.group(1)
+                            try:
+                                # Ищем элементы с data-video-url или data-gif-url
+                                video_url = parent.get_attribute('data-video-url') or parent.get_attribute('data-video-src')
+                                gif_url = parent.get_attribute('data-gif-url') or parent.get_attribute('data-gif-src')
+                                
+                                if video_url:
+                                    image_url = video_url
+                                    media_type = "video"
+                                elif gif_url:
+                                    image_url = gif_url
+                                    media_type = "gif"
+                            except:
+                                pass
                     except:
                         pass
                     
@@ -342,7 +644,7 @@ class PinterestSeleniumParser:
                     except:
                         pass
                     
-                    # Если нашли хотя бы URL и изображение, добавляем
+                    # Добавляем пин если есть URL (даже без изображения, т.к. может быть видео/GIF)
                     if pin_url:
                         # Преобразуем URL изображения в прямую ссылку
                         if image_url and 'pinimg.com' in image_url:
@@ -352,10 +654,13 @@ class PinterestSeleniumParser:
                             elif '/236x/' in image_url:
                                 image_url = image_url.replace('/236x/', '/originals/')
                         
+                        # Для видео и GIF, если нет image_url, оставляем пустым
+                        # (ссылка на пин все равно будет работать)
                         pins_data.append({
                             'author': author,
                             'pin_link': pin_url,
-                            'image_url': image_url,
+                            'image_url': image_url or '',  # Может быть пустым для видео/GIF
+                            'media_type': media_type,  # image, video, gif
                             'title': title,
                             'description': description
                         })
@@ -434,6 +739,7 @@ class PinterestSeleniumParser:
                 'author': '',
                 'pin_link': pin_url,
                 'image_url': '',
+                'media_type': 'image',  # image, video, gif
                 'title': '',
                 'description': ''
             }
@@ -571,21 +877,60 @@ class PinterestSeleniumParser:
             except:
                 pass
             
-            # Ищем изображение
+            # Ищем медиа-контент (изображение, видео, GIF)
             try:
-                img_elements = self.driver.find_elements(By.CSS_SELECTOR, 'img[src*="pinimg.com"]')
-                for img in img_elements:
-                    src = img.get_attribute('src') or img.get_attribute('data-src')
-                    if src and 'pinimg.com' in src:
-                        # Преобразуем в оригинал (полный размер)
-                        if '/736x/' in src:
-                            src = src.replace('/736x/', '/originals/')
-                        elif '/564x/' in src:
-                            src = src.replace('/564x/', '/originals/')
-                        elif '/236x/' in src:
-                            src = src.replace('/236x/', '/originals/')
-                        pin_data['image_url'] = src
-                        break
+                # Сначала проверяем наличие видео
+                try:
+                    video_elements = self.driver.find_elements(By.TAG_NAME, 'video')
+                    for video in video_elements:
+                        # Для видео берем постер (превью) или источник
+                        video_src = (video.get_attribute('poster') or 
+                                    video.get_attribute('src') or
+                                    video.get_attribute('data-src'))
+                        if video_src:
+                            pin_data['image_url'] = video_src
+                            pin_data['media_type'] = 'video'
+                            break
+                except:
+                    pass
+                
+                # Если видео не найдено, ищем изображение
+                if not pin_data['image_url']:
+                    img_elements = self.driver.find_elements(By.CSS_SELECTOR, 'img[src*="pinimg.com"]')
+                    for img in img_elements:
+                        src = img.get_attribute('src') or img.get_attribute('data-src')
+                        if src and 'pinimg.com' in src:
+                            # Преобразуем в оригинал (полный размер)
+                            if '/736x/' in src:
+                                src = src.replace('/736x/', '/originals/')
+                            elif '/564x/' in src:
+                                src = src.replace('/564x/', '/originals/')
+                            elif '/236x/' in src:
+                                src = src.replace('/236x/', '/originals/')
+                            pin_data['image_url'] = src
+                            
+                            # Проверяем, не GIF ли это
+                            if '.gif' in src.lower() or 'gif' in img.get_attribute('alt', '').lower():
+                                pin_data['media_type'] = 'gif'
+                            
+                            break
+                
+                # Если не нашли через теги, пробуем найти через data-атрибуты
+                if not pin_data['image_url']:
+                    try:
+                        # Ищем элементы с data-video-url или data-gif-url
+                        main_content = self.driver.find_element(By.TAG_NAME, 'body')
+                        video_url = main_content.get_attribute('data-video-url') or main_content.get_attribute('data-video-src')
+                        gif_url = main_content.get_attribute('data-gif-url') or main_content.get_attribute('data-gif-src')
+                        
+                        if video_url:
+                            pin_data['image_url'] = video_url
+                            pin_data['media_type'] = 'video'
+                        elif gif_url:
+                            pin_data['image_url'] = gif_url
+                            pin_data['media_type'] = 'gif'
+                    except:
+                        pass
             except:
                 pass
             
@@ -594,6 +939,430 @@ class PinterestSeleniumParser:
         except Exception as e:
             print(f"Ошибка при парсинге пина {pin_url}: {e}")
             return None
+    
+    def get_account_info(self) -> Optional[Dict[str, str]]:
+        """
+        Получает информацию об аккаунте пользователя.
+        Переходит на /me и извлекает имя пользователя и другую информацию.
+        
+        Returns:
+            Словарь с информацией об аккаунте или None
+        """
+        try:
+            print("\n" + "=" * 80)
+            print("ПОЛУЧЕНИЕ ИНФОРМАЦИИ ОБ АККАУНТЕ")
+            print("=" * 80)
+            
+            # Переходим на /me
+            self.driver.get(PinterestURLs.USER_ME)
+            
+            # Ждем загрузки и редиректа
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    lambda d: '/me' not in d.current_url or 'pinterest.com' in d.current_url
+                )
+            except:
+                time.sleep(3)
+            
+            # URL должен измениться на /username/
+            current_url = self.driver.current_url
+            print(f"Текущий URL: {current_url}")
+            
+            # Извлекаем имя пользователя из URL
+            username = None
+            if '/me' not in current_url:
+                # URL вида: https://ru.pinterest.com/username/ или /username/_pins/
+                parts = current_url.replace('https://ru.pinterest.com/', '').replace('https://www.pinterest.com/', '').split('/')
+                if parts and parts[0]:
+                    username = parts[0]
+            
+            account_info = {
+                'username': username or '',
+                'profile_url': current_url,
+                'pins_url': f"https://ru.pinterest.com/{username}/_pins/" if username else '',
+                'boards_url': f"https://ru.pinterest.com/{username}/_boards/" if username else ''
+            }
+            
+            # Пробуем извлечь дополнительную информацию со страницы
+            try:
+                page_source = self.driver.page_source
+                
+                # Ищем имя пользователя на странице
+                if not username:
+                    # Пробуем найти в различных местах
+                    try:
+                        username_elements = self.driver.find_elements(By.CSS_SELECTOR, 
+                            'h1, [data-test-id="user-name"], [class*="username"], [class*="UserName"]')
+                        for elem in username_elements:
+                            text = elem.text.strip()
+                            if text and len(text) < 50 and not text.startswith('http'):
+                                account_info['display_name'] = text
+                                break
+                    except:
+                        pass
+                
+                # Ищем количество пинов и досок
+                try:
+                    stats_elements = self.driver.find_elements(By.CSS_SELECTOR, 
+                        '[class*="stat"], [class*="count"], [class*="Stat"]')
+                    for elem in stats_elements:
+                        text = elem.text.strip()
+                        if 'пин' in text.lower() or 'pin' in text.lower():
+                            account_info['pins_count'] = text
+                        elif 'доск' in text.lower() or 'board' in text.lower():
+                            account_info['boards_count'] = text
+                except:
+                    pass
+            except:
+                pass
+            
+            if username:
+                print(f"✓ Имя пользователя: {username}")
+                print(f"✓ URL профиля: {account_info['profile_url']}")
+                print(f"✓ URL пинов: {account_info['pins_url']}")
+                print(f"✓ URL досок: {account_info['boards_url']}")
+            else:
+                print("⚠ Не удалось определить имя пользователя")
+            
+            print("=" * 80 + "\n")
+            return account_info if username else None
+            
+        except Exception as e:
+            print(f"⚠ Ошибка при получении информации об аккаунте: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    def parse_user_pins(self, username: str = None, max_pins: int = None, scroll_times: int = 3) -> List[Dict[str, str]]:
+        """
+        Парсит пины пользователя.
+        
+        Args:
+            username: Имя пользователя (если None, получает из /me)
+            max_pins: Максимальное количество пинов
+            scroll_times: Количество прокруток для загрузки контента
+            
+        Returns:
+            Список словарей с данными о пинах
+        """
+        if max_pins is None:
+            max_pins = PinterestConfig.MAX_PINS
+        
+        # Если username не указан, получаем из /me
+        if not username:
+            account_info = self.get_account_info()
+            if account_info and account_info.get('username'):
+                username = account_info['username']
+            else:
+                print("⚠ Не удалось определить имя пользователя")
+                return []
+        
+        url = PinterestURLs.USER_PINS.format(username=username)
+        print(f"Парсинг пинов пользователя: {username}")
+        print(f"URL: {url}")
+        
+        # Переходим на страницу пинов
+        self.driver.get(url)
+        
+        # Ждем загрузки
+        try:
+            WebDriverWait(self.driver, 8).until(
+                lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+            )
+        except:
+            time.sleep(2)
+        
+        # Прокручиваем для загрузки контента
+        print("Прокрутка страницы для загрузки контента...")
+        for i in range(scroll_times):
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+            print(f"  Прокрутка {i+1}/{scroll_times}")
+        
+        # Извлекаем данные
+        html = self.driver.page_source
+        soup = BeautifulSoup(html, 'html.parser')
+        pins_data = self._extract_from_html(soup)
+        
+        # Если пины не найдены, пробуем альтернативный метод
+        if not pins_data:
+            print("Пины не найдены стандартным методом, пробуем альтернативный...")
+            try:
+                # Дополнительное ожидание
+                time.sleep(2)
+                
+                # Ищем все ссылки на пины более широким поиском
+                all_links = self.driver.find_elements(By.CSS_SELECTOR, 'a[href*="pin"], a[href*="/pin/"]')
+                seen_urls = set()
+                
+                print(f"Найдено потенциальных ссылок: {len(all_links)}")
+                
+                for link in all_links:
+                    try:
+                        href = link.get_attribute('href')
+                        if not href or '/pin/' not in href:
+                            continue
+                        
+                        # Нормализуем URL
+                        if href not in seen_urls:
+                            seen_urls.add(href)
+                            
+                            # Получаем базовую информацию
+                            pin_id = href.split('/pin/')[-1].rstrip('/')
+                            if not pin_id:
+                                continue
+                            
+                            # Ищем медиа-контент рядом со ссылкой
+                            image_url = ''
+                            media_type = 'image'
+                            try:
+                                parent = link.find_element(By.XPATH, './ancestor::div[1]')
+                                
+                                # Пробуем найти видео
+                                try:
+                                    video = parent.find_element(By.TAG_NAME, 'video')
+                                    image_url = (video.get_attribute('poster') or 
+                                               video.get_attribute('src') or
+                                               video.get_attribute('data-src'))
+                                    if image_url:
+                                        media_type = 'video'
+                                except:
+                                    # Если видео нет, ищем изображение
+                                    try:
+                                        img = parent.find_element(By.TAG_NAME, 'img')
+                                        image_url = img.get_attribute('src') or img.get_attribute('data-src')
+                                        
+                                        # Проверяем на GIF
+                                        if image_url and ('.gif' in image_url.lower() or 
+                                                         'gif' in img.get_attribute('alt', '').lower()):
+                                            media_type = 'gif'
+                                    except:
+                                        pass
+                            except:
+                                pass
+                            
+                            pins_data.append({
+                                'author': username,
+                                'pin_link': href,
+                                'image_url': image_url,
+                                'media_type': media_type,
+                                'title': '',
+                                'description': ''
+                            })
+                    except:
+                        continue
+                
+                print(f"Найдено пинов альтернативным методом: {len(pins_data)}")
+            except Exception as e:
+                print(f"Ошибка альтернативного метода: {e}")
+        
+        # Получаем полную информацию о пинах
+        if pins_data:
+            print("Получение полной информации о пинах...")
+            for i, pin in enumerate(pins_data[:max_pins]):
+                if pin.get('pin_link') and not pin.get('title'):
+                    detail = self.parse_pin_detail(pin['pin_link'])
+                    if detail:
+                        pins_data[i].update(detail)
+                    
+                    # Скачиваем изображение если нужно
+                    if self.download_images and pins_data[i].get('image_url'):
+                        pin_id = pin['pin_link'].split('/pin/')[-1].rstrip('/')
+                        local_path = self._download_image(pins_data[i]['image_url'], pin_id)
+                        if local_path:
+                            pins_data[i]['image_url'] = local_path
+                    
+                    time.sleep(1)
+        
+        print(f"Найдено пинов: {len(pins_data)}")
+        return pins_data[:max_pins]
+    
+    def parse_user_boards(self, username: str = None) -> List[Dict[str, str]]:
+        """
+        Парсит доски пользователя.
+        
+        Args:
+            username: Имя пользователя (если None, получает из /me)
+            
+        Returns:
+            Список словарей с информацией о досках
+        """
+        # Если username не указан, получаем из /me
+        if not username:
+            account_info = self.get_account_info()
+            if account_info and account_info.get('username'):
+                username = account_info['username']
+            else:
+                print("⚠ Не удалось определить имя пользователя")
+                return []
+        
+        url = PinterestURLs.USER_BOARDS.format(username=username)
+        print(f"\nПарсинг досок пользователя: {username}")
+        print(f"URL: {url}")
+        
+        # Переходим на страницу досок
+        self.driver.get(url)
+        
+        # Ждем загрузки
+        try:
+            WebDriverWait(self.driver, 8).until(
+                lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+            )
+        except:
+            time.sleep(2)
+        
+        # Прокручиваем для загрузки всех досок
+        print("Прокрутка для загрузки досок...")
+        for i in range(3):
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+        
+        # Дополнительное ожидание для загрузки контента
+        time.sleep(3)
+        
+        boards_data = []
+        
+        try:
+            # Ищем ссылки на доски - более широкий поиск
+            board_links = self.driver.find_elements(By.CSS_SELECTOR, f'a[href*="/{username}/"]')
+            seen_boards = set()
+            
+            for link in board_links:
+                try:
+                    href = link.get_attribute('href')
+                    if not href or href in seen_boards:
+                        continue
+                    
+                    # Доски имеют формат: /username/board-name/
+                    # Исключаем служебные страницы
+                    excluded_paths = ['/_pins/', '/_boards/', '/_created/', '/_saved/', '/pin/', '/settings/', '/account/']
+                    is_excluded = any(excluded in href for excluded in excluded_paths)
+                    
+                    # Исключаем если это просто профиль пользователя
+                    is_profile = href.rstrip('/').endswith(f'/{username}')
+                    
+                    if (f'/{username}/' in href and 
+                        not is_excluded and
+                        not is_profile and
+                        '/pin/' not in href and
+                        href.count('/') >= 3):
+                        
+                        seen_boards.add(href)
+                        
+                        # Извлекаем название доски
+                        board_name = href.rstrip('/').split('/')[-1]
+                        
+                        # Ищем изображение доски
+                        try:
+                            parent = link.find_element(By.XPATH, './ancestor::div[1]')
+                            img = parent.find_element(By.TAG_NAME, 'img')
+                            board_image = img.get_attribute('src') or img.get_attribute('data-src')
+                        except:
+                            board_image = ''
+                        
+                        # Ищем описание/количество пинов
+                        try:
+                            parent = link.find_element(By.XPATH, './ancestor::div[1]')
+                            text_elements = parent.find_elements(By.CSS_SELECTOR, 'div, span')
+                            board_description = ''
+                            pins_count = ''
+                            
+                            for elem in text_elements:
+                                text = elem.text.strip()
+                                if text and ('пин' in text.lower() or 'pin' in text.lower()):
+                                    pins_count = text
+                                elif text and len(text) > 5 and len(text) < 100:
+                                    if not board_description:
+                                        board_description = text
+                        except:
+                            board_description = ''
+                            pins_count = ''
+                        
+                        boards_data.append({
+                            'board_name': board_name,
+                            'board_url': href,
+                            'board_image': board_image or '',
+                            'description': board_description,
+                            'pins_count': pins_count,
+                            'username': username
+                        })
+                except:
+                    continue
+        
+        except Exception as e:
+            print(f"⚠ Ошибка при парсинге досок: {e}")
+        
+        print(f"Найдено досок: {len(boards_data)}")
+        return boards_data
+    
+    def parse_board_pins(self, username: str, board_name: str, max_pins: int = None, scroll_times: int = 3) -> List[Dict[str, str]]:
+        """
+        Парсит пины из конкретной доски пользователя.
+        
+        Args:
+            username: Имя пользователя
+            board_name: Название доски
+            max_pins: Максимальное количество пинов
+            scroll_times: Количество прокруток
+            
+        Returns:
+            Список словарей с данными о пинах
+        """
+        if max_pins is None:
+            max_pins = PinterestConfig.MAX_PINS
+        
+        url = PinterestURLs.BOARD_PINS.format(username=username, board_name=board_name)
+        print(f"\nПарсинг пинов из доски: {board_name}")
+        print(f"URL: {url}")
+        
+        # Переходим на страницу доски
+        self.driver.get(url)
+        
+        # Ждем загрузки
+        try:
+            WebDriverWait(self.driver, 8).until(
+                lambda d: d.execute_script('return document.readyState') in ['interactive', 'complete']
+            )
+        except:
+            time.sleep(2)
+        
+        # Прокручиваем для загрузки контента
+        print("Прокрутка страницы для загрузки контента...")
+        for i in range(scroll_times):
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+            print(f"  Прокрутка {i+1}/{scroll_times}")
+        
+        # Извлекаем данные
+        html = self.driver.page_source
+        soup = BeautifulSoup(html, 'html.parser')
+        pins_data = self._extract_from_html(soup)
+        
+        # Добавляем информацию о доске к каждому пину
+        for pin in pins_data:
+            pin['board_name'] = board_name
+            pin['board_url'] = url
+        
+        # Получаем полную информацию о пинах
+        if pins_data:
+            print("Получение полной информации о пинах...")
+            for i, pin in enumerate(pins_data[:max_pins]):
+                if pin.get('pin_link') and not pin.get('title'):
+                    detail = self.parse_pin_detail(pin['pin_link'])
+                    if detail:
+                        pins_data[i].update(detail)
+                    
+                    # Скачиваем изображение если нужно
+                    if self.download_images and pins_data[i].get('image_url'):
+                        pin_id = pin['pin_link'].split('/pin/')[-1].rstrip('/')
+                        local_path = self._download_image(pins_data[i]['image_url'], pin_id)
+                        if local_path:
+                            pins_data[i]['image_url'] = local_path
+                    
+                    time.sleep(1)
+        
+        print(f"Найдено пинов в доске: {len(pins_data)}")
+        return pins_data[:max_pins]
     
     def close(self):
         """Закрывает браузер"""
@@ -610,12 +1379,22 @@ class PinterestSeleniumParser:
 
 if __name__ == "__main__":
     import sys
+    import json
     from pinterest_parser import PinterestParser
     
     print("=" * 80)
     print("ПАРСЕР PINTEREST")
     print("=" * 80)
     print()
+    
+    # Загружаем конфиг
+    config = {}
+    if os.path.exists("config.json"):
+        try:
+            with open("config.json", 'r', encoding='utf-8') as f:
+                config = json.load(f)
+        except:
+            pass
     
     # Интерактивный ввод тематики
     if len(sys.argv) > 1:
@@ -646,8 +1425,26 @@ if __name__ == "__main__":
     print(f"Количество пинов: {max_pins}")
     print()
     
-    # Создаем парсер
-    parser = PinterestSeleniumParser(headless=True)
+    # Создаем парсер с автологином если включено в конфиге
+    enable_login = config.get("enable_login", False)
+    headless = config.get("headless", True)
+    download_images = config.get("download_images", True)
+    
+    # Если включен логин, headless должен быть False для видимости браузера
+    if enable_login:
+        headless = False
+        print("\n" + "=" * 80)
+        print("🔐 АВТОРИЗАЦИЯ ВКЛЮЧЕНА")
+        print("=" * 80)
+        print("Браузер будет открыт для ручного входа в Pinterest")
+        print("После успешного входа сессия сохранится автоматически")
+        print("=" * 80 + "\n")
+    
+    parser = PinterestSeleniumParser(
+        headless=headless,
+        download_images=download_images,
+        auto_login=enable_login
+    )
     
     try:
         pins = parser.parse_search_page(query, max_pins=max_pins)
@@ -671,6 +1468,7 @@ if __name__ == "__main__":
             print(f"\n✓ Данные сохранены в файл: {filename}")
         else:
             print("\n⚠ Пины не найдены. Попробуйте:")
+            print("  - Включить авторизацию в config.json (enable_login: true)")
             print("  - Добавить cookies для авторизации")
             print("  - Изменить поисковый запрос")
             print("  - Проверить интернет-соединение")

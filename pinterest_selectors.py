@@ -31,6 +31,11 @@ class PinterestURLs:
     BASE_URL = "https://www.pinterest.com"
     SEARCH_URL = "https://www.pinterest.com/search/pins/?q={query}"
     PIN_URL = "https://www.pinterest.com/pin/{pin_id}/"
+    USER_ME = "https://ru.pinterest.com/me"
+    USER_PROFILE = "https://ru.pinterest.com/{username}/"
+    USER_PINS = "https://ru.pinterest.com/{username}/_pins/"
+    USER_BOARDS = "https://ru.pinterest.com/{username}/_boards/"
+    BOARD_PINS = "https://ru.pinterest.com/{username}/{board_name}/"
 
 
 class PinterestConfig:
